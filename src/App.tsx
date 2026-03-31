@@ -57,7 +57,28 @@ import type {
   Note
 } from './types';
 
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx9Q3_0zDjFBHRinZwaEbzcpuB25ANwYLmTEz9cN8BPQRV0ljL1MOTnU5qNrM61QjWP-g/exec';
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzmbIoRyz_XkDpv0cC5ica-YvDLfC9sisc31VrbUT6ITTLfLaY1JXP8uBFXc8b_2qpFEA/exec';
+
+import { db, auth } from './firebase';
+import { 
+  onAuthStateChanged, 
+  signInAnonymously,
+  signInWithEmailAndPassword, 
+  signOut 
+} from 'firebase/auth';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  setDoc,
+  query,
+  where,
+  getDoc,
+  getDocs
+} from 'firebase/firestore';
 
 export default function App() {
   // State
@@ -67,7 +88,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<{ type: string, idx: number } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ type: string, idx: number, docId?: string } | null>(null);
   const [isReasonModalOpen, setIsReasonModalOpen] = useState(false);
   const [reasonStaffId, setReasonStaffId] = useState('');
   const [reasonText, setReasonText] = useState('');
@@ -80,6 +101,109 @@ export default function App() {
   const [crop, setCrop] = useState<Point>({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isFirstLoginModalOpen, setIsFirstLoginModalOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
+  const [staff, setStaff] = useState<Staff[]>([]);
+  const [equip, setEquip] = useState<Equipment[]>([]);
+  const [labSys, setLabSys] = useState<LabSys[]>([]);
+  const [labSw, setLabSw] = useState<LabSw[]>([]);
+  const [labEquip, setLabEquip] = useState<LabEquip[]>([]);
+  const [comp, setComp] = useState<Complaint[]>([]);
+  const [sched, setSched] = useState<Schedule[]>([]);
+  const [att, setAtt] = useState<AttendanceRecord>({});
+  const [notes, setNotes] = useState<Note[]>([]);
+
+  const formatTime = (timeStr: string) => {
+    if (!timeStr) return '';
+    if (timeStr.includes('T')) {
+      // ISO string
+      try {
+        const date = new Date(timeStr);
+        return format(date, 'hh:mm a');
+      } catch (e) {
+        return timeStr;
+      }
+    }
+    return timeStr;
+  };
+
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  // Firebase Auth & Listeners
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsAuthReady(true);
+      } else {
+        signInAnonymously(auth).catch((err) => {
+          console.error("Anonymous Auth Error (likely disabled in console):", err);
+          // Proceed anyway, firestore rules will determine access
+          setIsAuthReady(true);
+        });
+      }
+    });
+
+    return () => unsubAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthReady) return;
+
+    const unsubStaff = onSnapshot(collection(db, 'staff'), (snap) => {
+      setStaff(snap.docs.map(doc => ({ ...doc.data() as Staff, docId: doc.id })));
+    }, (err) => console.error("Staff Listener Error:", err));
+
+    const unsubEquip = onSnapshot(collection(db, 'equipment'), (snap) => {
+      setEquip(snap.docs.map(doc => ({ ...doc.data() as Equipment, docId: doc.id })));
+    }, (err) => console.error("Equip Listener Error:", err));
+
+    const unsubLabSys = onSnapshot(collection(db, 'lab_sys'), (snap) => {
+      setLabSys(snap.docs.map(doc => ({ ...doc.data() as LabSys, docId: doc.id })));
+    }, (err) => console.error("LabSys Listener Error:", err));
+
+    const unsubLabSw = onSnapshot(collection(db, 'lab_sw'), (snap) => {
+      setLabSw(snap.docs.map(doc => ({ ...doc.data() as LabSw, docId: doc.id })));
+    }, (err) => console.error("LabSw Listener Error:", err));
+
+    const unsubLabEquip = onSnapshot(collection(db, 'lab_equip'), (snap) => {
+      setLabEquip(snap.docs.map(doc => ({ ...doc.data() as LabEquip, docId: doc.id })));
+    }, (err) => console.error("LabEquip Listener Error:", err));
+
+    const unsubComp = onSnapshot(collection(db, 'complaints'), (snap) => {
+      setComp(snap.docs.map(doc => ({ ...doc.data() as Complaint, docId: doc.id })));
+    }, (err) => console.error("Comp Listener Error:", err));
+
+    const unsubSched = onSnapshot(collection(db, 'schedules'), (snap) => {
+      setSched(snap.docs.map(doc => ({ ...doc.data() as Schedule, docId: doc.id })));
+    }, (err) => console.error("Sched Listener Error:", err));
+
+    const unsubNotes = onSnapshot(collection(db, 'notes'), (snap) => {
+      setNotes(snap.docs.map(doc => ({ ...doc.data() as Note, docId: doc.id })));
+    }, (err) => console.error("Notes Listener Error:", err));
+
+    const unsubAtt = onSnapshot(collection(db, 'attendance'), (snap) => {
+      const attData: AttendanceRecord = {};
+      snap.docs.forEach(doc => {
+        attData[doc.id] = doc.data() as any;
+      });
+      setAtt(attData);
+    }, (err) => console.error("Att Listener Error:", err));
+
+    return () => {
+      unsubStaff();
+      unsubEquip();
+      unsubLabSys();
+      unsubLabSw();
+      unsubLabEquip();
+      unsubComp();
+      unsubSched();
+      unsubNotes();
+      unsubAtt();
+    };
+  }, [isAuthReady]);
 
   const getCroppedImg = async (imageSrc: string, pixelCrop: Area): Promise<string> => {
     const image = new Image();
@@ -158,6 +282,14 @@ export default function App() {
     if (user) {
       setCurrentUser(user);
       
+      if (user.firstLogin) {
+        setIsFirstLoginModalOpen(true);
+        // Set to false in Firestore so it doesn't show again
+        if (user.docId) {
+          updateDoc(doc(db, 'staff', user.docId), { firstLogin: false });
+        }
+      }
+      
       // Check for unread notes/replies
       const isAdmin = user.r === 'Admin';
       const unreadCount = notes.filter(n => {
@@ -204,54 +336,12 @@ export default function App() {
   const handleDeleteNote = (id: string) => {
     const updatedNotes = notes.filter(n => n.id !== id);
     setNotes(updatedNotes);
-    syncToGoogle('note_delete', { id });
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     setActiveTab('dash');
   };
-
-  // Data State
-  const [staff, setStaff] = useState<Staff[]>(() => {
-    const saved = localStorage.getItem('erp_staff');
-    return saved ? JSON.parse(saved) : [
-      { id: '01', n: 'Shahan Ullah', r: 'Admin', s: '1780', p: 'Admin@123', pic: 'https://picsum.photos/seed/admin/200', type: 'Daily' },
-      { id: '02', n: 'Sample Staff', r: 'Staff', s: '1200', p: 'Staff@123', pic: 'https://picsum.photos/seed/staff/200', type: 'Daily' }
-    ];
-  });
-  const [equip, setEquip] = useState<Equipment[]>(() => {
-    const saved = localStorage.getItem('erp_inv');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [labSys, setLabSys] = useState<LabSys[]>(() => {
-    const saved = localStorage.getItem('erp_lab_sys');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [labSw, setLabSw] = useState<LabSw[]>(() => {
-    const saved = localStorage.getItem('erp_lab_sw');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [labEquip, setLabEquip] = useState<LabEquip[]>(() => {
-    const saved = localStorage.getItem('erp_lab_equip');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [comp, setComp] = useState<Complaint[]>(() => {
-    const saved = localStorage.getItem('erp_comp');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [sched, setSched] = useState<Schedule[]>(() => {
-    const saved = localStorage.getItem('erp_sched');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [att, setAtt] = useState<AttendanceRecord>(() => {
-    const saved = localStorage.getItem('erp_att_v27');
-    return saved ? JSON.parse(saved) : {};
-  });
-  const [notes, setNotes] = useState<Note[]>(() => {
-    const saved = localStorage.getItem('erp_notes');
-    return saved ? JSON.parse(saved) : [];
-  });
 
   const [attDate, setAttDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedLabStaffId, setSelectedLabStaffId] = useState<string>(() => currentUser?.id || '');
@@ -282,17 +372,6 @@ export default function App() {
     };
   }, [currentTime.toDateString()]);
 
-  // Sync to LocalStorage
-  useEffect(() => localStorage.setItem('erp_staff', JSON.stringify(staff)), [staff]);
-  useEffect(() => localStorage.setItem('erp_inv', JSON.stringify(equip)), [equip]);
-  useEffect(() => localStorage.setItem('erp_lab_sys', JSON.stringify(labSys)), [labSys]);
-  useEffect(() => localStorage.setItem('erp_lab_sw', JSON.stringify(labSw)), [labSw]);
-  useEffect(() => localStorage.setItem('erp_lab_equip', JSON.stringify(labEquip)), [labEquip]);
-  useEffect(() => localStorage.setItem('erp_comp', JSON.stringify(comp)), [comp]);
-  useEffect(() => localStorage.setItem('erp_sched', JSON.stringify(sched)), [sched]);
-  useEffect(() => localStorage.setItem('erp_att_v27', JSON.stringify(att)), [att]);
-  useEffect(() => localStorage.setItem('erp_notes', JSON.stringify(notes)), [notes]);
-
   // Clock
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -308,59 +387,8 @@ export default function App() {
     }
   }, [theme]);
 
-  // Sync with Google Sheets on load
-  useEffect(() => {
-    const fetchCloudData = async () => {
-      try {
-        const response = await fetch(SCRIPT_URL);
-        const cloudData = await response.json();
-        if (cloudData && cloudData.staff) {
-          const mappedStaff = cloudData.staff.map((row: any) => ({
-            id: String(row.id || row.ID || ''),
-            n: String(row.name || row.n || row.Name || 'No Name'),
-            r: String(row.role || row.r || 'Staff'),
-            s: String(row.salary || row.s || '0'),
-            p: String(row.passkey || row.p || '****')
-          }));
-          
-          setStaff(prev => {
-            const merged = [...prev];
-            mappedStaff.forEach((cloudUser: Staff) => {
-              const idx = merged.findIndex(u => String(u.id) === String(cloudUser.id));
-              if (idx === -1) {
-                merged.push(cloudUser);
-              } else {
-                // Only update if cloud data has a real passkey
-                if (cloudUser.p !== '****') {
-                  merged[idx] = cloudUser;
-                }
-              }
-            });
-            return merged;
-          });
-        }
-      } catch (e) {
-        console.error("Sync Error:", e);
-      }
-    };
-    fetchCloudData();
-  }, []);
-
-  const syncToGoogle = async (mode: string, entry: any) => {
-    try {
-      await fetch(SCRIPT_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, entry })
-      });
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
   // Handlers
-  const handleSave = (formData: any) => {
+  const handleSave = async (formData: any) => {
     const dataWithDefaults = { ...formData };
 
     if (modalMode === 'staff') {
@@ -371,87 +399,83 @@ export default function App() {
         return;
       }
 
-      const isDuplicate = staff.some((user, index) => String(user.id) === String(dataWithDefaults.id) && index !== editId);
+      const isDuplicate = staff.some((user) => String(user.id) === String(dataWithDefaults.id) && user.docId !== dataWithDefaults.docId);
       if (isDuplicate) {
         setIsConfirmModalOpen(true);
         setConfirmAction({ type: 'duplicate_error', idx: -1 });
         return;
       }
-      const newStaff = [...staff];
-      if (editId === -1) newStaff.push(dataWithDefaults as Staff);
-      else newStaff[editId] = dataWithDefaults as Staff;
-      
-      setStaff(newStaff);
-      localStorage.setItem('erp_staff', JSON.stringify(newStaff)); // Immediate save
-      syncToGoogle('staff', dataWithDefaults);
+
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'staff', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        dataWithDefaults.firstLogin = true; // New staff must change password on first login
+        await addDoc(collection(db, 'staff'), dataWithDefaults);
+      }
     } else if (modalMode === 'equip') {
       if (!dataWithDefaults.st) dataWithDefaults.st = 'Working';
-      const newEquip = [...equip];
-      if (editId === -1) newEquip.push(dataWithDefaults);
-      else newEquip[editId] = dataWithDefaults;
-      setEquip(newEquip);
-      syncToGoogle('equip', dataWithDefaults);
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'equipment', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        await addDoc(collection(db, 'equipment'), dataWithDefaults);
+      }
     } else if (modalMode === 'lab_sys') {
       if (!dataWithDefaults.staffId) {
-        dataWithDefaults.staffId = isAdmin ? selectedLabStaffId : currentUser?.id;
-      }
-      if (!dataWithDefaults.staffId) return; // Cannot save without staffId
-      const newLabSys = [...labSys];
-      if (editId === -1) newLabSys.push(dataWithDefaults);
-      else newLabSys[editId] = dataWithDefaults;
-      setLabSys(newLabSys);
-      syncToGoogle('lab_sys', dataWithDefaults);
-    } else if (modalMode === 'lab_sw') {
-      if (!dataWithDefaults.staffId) {
-        dataWithDefaults.staffId = isAdmin ? selectedLabStaffId : currentUser?.id;
+        // If adding from Inventory Control tab, set as global
+        dataWithDefaults.staffId = activeTab === 'equip' ? 'global' : (isAdmin ? selectedLabStaffId : currentUser?.id);
       }
       if (!dataWithDefaults.staffId) return;
-      const newLabSw = [...labSw];
-      if (editId === -1) newLabSw.push(dataWithDefaults);
-      else newLabSw[editId] = dataWithDefaults;
-      setLabSw(newLabSw);
-      syncToGoogle('lab_sw', dataWithDefaults);
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'lab_sys', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        await addDoc(collection(db, 'lab_sys'), dataWithDefaults);
+      }
+    } else if (modalMode === 'lab_sw') {
+      if (!dataWithDefaults.staffId) {
+        // If adding from Inventory Control tab, set as global
+        dataWithDefaults.staffId = activeTab === 'equip' ? 'global' : (isAdmin ? selectedLabStaffId : currentUser?.id);
+      }
+      if (!dataWithDefaults.staffId) return;
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'lab_sw', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        await addDoc(collection(db, 'lab_sw'), dataWithDefaults);
+      }
     } else if (modalMode === 'lab_equip') {
       if (!dataWithDefaults.staffId) {
         dataWithDefaults.staffId = isAdmin ? selectedLabStaffId : currentUser?.id;
       }
       if (!dataWithDefaults.staffId) return;
       if (!dataWithDefaults.status) dataWithDefaults.status = 'Working';
-      const newLabEquip = [...labEquip];
-      if (editId === -1) newLabEquip.push(dataWithDefaults);
-      else newLabEquip[editId] = dataWithDefaults;
-      setLabEquip(newLabEquip);
-      syncToGoogle('lab_equip', dataWithDefaults);
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'lab_equip', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        await addDoc(collection(db, 'lab_equip'), dataWithDefaults);
+      }
     } else if (modalMode === 'comp') {
       if (!dataWithDefaults.p) dataWithDefaults.p = 'Low';
-      const newComp = [...comp];
-      if (editId === -1) newComp.push(dataWithDefaults);
-      else newComp[editId] = dataWithDefaults;
-      setComp(newComp);
-      syncToGoogle('comp', dataWithDefaults);
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'complaints', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        await addDoc(collection(db, 'complaints'), dataWithDefaults);
+      }
     } else if (modalMode === 'sched') {
-      const newSched = [...sched];
-      if (editId === -1) newSched.push(formData);
-      else newSched[editId] = formData;
-      setSched(newSched);
-      syncToGoogle('sched', formData);
+      if (dataWithDefaults.docId) {
+        await updateDoc(doc(db, 'schedules', dataWithDefaults.docId), dataWithDefaults);
+      } else {
+        await addDoc(collection(db, 'schedules'), dataWithDefaults);
+      }
     }
     setIsModalOpen(false);
+    setEditItem(null);
     setEditId(-1);
   };
 
-  const openEditModal = (mode: TabType | 'lab_sys' | 'lab_sw' | 'lab_equip', item: any) => {
-    let originalIdx = -1;
-    if (mode === 'staff') originalIdx = staff.findIndex(s => s.id === item.id);
-    else if (mode === 'equip') originalIdx = equip.findIndex(e => e.s === item.s);
-    else if (mode === 'lab_sys') originalIdx = labSys.findIndex(l => l.id === item.id);
-    else if (mode === 'lab_sw') originalIdx = labSw.findIndex(s => s.name === item.name && s.staffId === item.staffId);
-    else if (mode === 'lab_equip') originalIdx = labEquip.findIndex(e => e.name === item.name && e.staffId === item.staffId);
-    else if (mode === 'comp') originalIdx = comp.findIndex(c => c.d === item.d);
-    else if (mode === 'sched') originalIdx = sched.findIndex(s => s.sub === item.sub && s.day === item.day);
+  const [editItem, setEditItem] = useState<any>(null);
 
+  const openEditModal = (mode: TabType | 'lab_sys' | 'lab_sw' | 'lab_equip', item: any) => {
     setModalMode(mode);
-    setEditId(originalIdx);
+    setEditItem(item);
     setIsModalOpen(true);
   };
 
@@ -460,66 +484,49 @@ export default function App() {
       return;
     }
     
-    let originalIdx = -1;
-    if (mode === 'staff') originalIdx = staff.findIndex(s => s.id === item.id);
-    else if (mode === 'equip') originalIdx = equip.findIndex(e => e.s === item.s);
-    else if (mode === 'lab_sys') originalIdx = labSys.findIndex(l => l.id === item.id);
-    else if (mode === 'lab_sw') originalIdx = labSw.findIndex(s => s.name === item.name && s.pc === item.pc);
-    else if (mode === 'lab_equip') originalIdx = labEquip.findIndex(e => e.name === item.name && e.staffId === item.staffId);
-    else if (mode === 'comp') originalIdx = comp.findIndex(c => c.d === item.d);
-    else if (mode === 'sched') originalIdx = sched.findIndex(s => s.sub === item.sub && s.day === item.day);
-
-    if (originalIdx !== -1) {
-      setConfirmAction({ type: 'delete_' + mode, idx: originalIdx });
-      setIsConfirmModalOpen(true);
-    }
+    setConfirmAction({ type: 'delete_' + mode, idx: -1, docId: item.docId });
+    setIsConfirmModalOpen(true);
   };
 
   const executeDelete = async () => {
-    if (!confirmAction) return;
-    const { type, idx } = confirmAction;
+    if (!confirmAction || !confirmAction.docId) return;
+    const { type, docId } = confirmAction;
     const mode = type.replace('delete_', '');
     
-    const entry = (mode === 'staff' ? staff : mode === 'equip' ? equip : mode === 'lab_sys' ? labSys : mode === 'lab_sw' ? labSw : mode === 'lab_equip' ? labEquip : mode === 'comp' ? comp : sched)[idx];
-    await syncToGoogle('delete_' + mode, entry);
+    const collectionName = mode === 'staff' ? 'staff' : 
+                         mode === 'equip' ? 'equipment' : 
+                         mode === 'lab_sys' ? 'lab_sys' : 
+                         mode === 'lab_sw' ? 'lab_sw' : 
+                         mode === 'lab_equip' ? 'lab_equip' : 
+                         mode === 'comp' ? 'complaints' : 'schedules';
     
-    if (mode === 'staff') setStaff(prev => prev.filter((_, i) => i !== idx));
-    else if (mode === 'equip') setEquip(prev => prev.filter((_, i) => i !== idx));
-    else if (mode === 'lab_sys') setLabSys(prev => prev.filter((_, i) => i !== idx));
-    else if (mode === 'lab_sw') setLabSw(prev => prev.filter((_, i) => i !== idx));
-    else if (mode === 'lab_equip') setLabEquip(prev => prev.filter((_, i) => i !== idx));
-    else if (mode === 'comp') setComp(prev => prev.filter((_, i) => i !== idx));
-    else if (mode === 'sched') setSched(prev => prev.filter((_, i) => i !== idx));
+    await deleteDoc(doc(db, collectionName, docId));
     
     setIsConfirmModalOpen(false);
     setConfirmAction(null);
   };
 
-  const setAttendance = (id: string, status: 'Present' | 'Absent') => {
+  const setAttendance = async (id: string, status: 'Present' | 'Absent') => {
     if (status === 'Absent') {
       setReasonStaffId(id);
       setIsReasonModalOpen(true);
       setReasonText('');
       setDeductSalary(false); // Default: do not deduct
     } else {
-      setAtt(prev => ({
-        ...prev,
-        [attDate]: {
-          ...(prev[attDate] || {}),
-          [id]: { status: 'Present' }
-        }
-      }));
+      const dayData = att[attDate] || {};
+      await setDoc(doc(db, 'attendance', attDate), {
+        ...dayData,
+        [id]: { status: 'Present' }
+      });
     }
   };
 
-  const saveAbsenceReason = () => {
-    setAtt(prev => ({
-      ...prev,
-      [attDate]: {
-        ...(prev[attDate] || {}),
-        [reasonStaffId]: { status: 'Absent', reason: reasonText, deduct: deductSalary }
-      }
-    }));
+  const saveAbsenceReason = async () => {
+    const dayData = att[attDate] || {};
+    await setDoc(doc(db, 'attendance', attDate), {
+      ...dayData,
+      [reasonStaffId]: { status: 'Absent', reason: reasonText, deduct: deductSalary }
+    });
     setIsReasonModalOpen(false);
   };
 
@@ -648,6 +655,94 @@ export default function App() {
     }
   };
 
+  const handlePrintLabInventory = () => {
+    const staffMember = staff.find(s => s.id === (isAdmin ? selectedLabStaffId : currentUser?.id));
+    const labName = staffMember?.lab || 'N/A';
+    const staffName = staffMember?.n || 'N/A';
+    
+    const sys = labSys.filter(l => l.staffId === (isAdmin ? selectedLabStaffId : currentUser?.id));
+    const sw = labSw.filter(s => s.staffId === (isAdmin ? selectedLabStaffId : currentUser?.id));
+    const equipList = labEquip.filter(e => e.staffId === (isAdmin ? selectedLabStaffId : currentUser?.id));
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const html = `
+      <html>
+        <head>
+          <title>Lab Inventory - ${labName}</title>
+          <style>
+            body { font-family: sans-serif; padding: 40px; color: #333; }
+            h1 { color: #00f2ff; margin-bottom: 5px; }
+            .header { border-bottom: 2px solid #eee; padding-bottom: 20px; margin-bottom: 30px; }
+            .meta { font-size: 14px; color: #666; margin-bottom: 5px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+            th { background: #f8f9fa; text-align: left; padding: 12px; border-bottom: 2px solid #eee; font-size: 12px; text-transform: uppercase; }
+            td { padding: 12px; border-bottom: 1px solid #eee; font-size: 14px; }
+            .section-title { font-weight: bold; font-size: 18px; margin-bottom: 15px; color: #444; }
+            .status { font-weight: bold; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+            .status-working { color: #00ff88; background: rgba(0, 255, 136, 0.1); }
+            .status-faulty { color: #ff3f34; background: rgba(255, 63, 52, 0.1); }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Lab Inventory Report</h1>
+            <div class="meta"><strong>Lab Name:</strong> ${labName}</div>
+            <div class="meta"><strong>In-Charge:</strong> ${staffName}</div>
+            <div class="meta"><strong>Date:</strong> ${new Date().toLocaleDateString()}</div>
+          </div>
+
+          <div class="section-title">PC Systems</div>
+          <table>
+            <thead>
+              <tr><th>PC ID</th><th>Generation</th><th>RAM</th><th>Disk</th><th>Qty</th></tr>
+            </thead>
+            <tbody>
+              ${sys.map(l => `<tr><td>${l.id}</td><td>${l.gen}</td><td>${l.ram}</td><td>${l.disk}</td><td>${l.count}</td></tr>`).join('')}
+              ${sys.length === 0 ? '<tr><td colspan="5" style="text-align:center">No records found</td></tr>' : ''}
+            </tbody>
+          </table>
+
+          <div class="section-title">Software Inventory</div>
+          <table>
+            <thead>
+              <tr><th>Software Name</th><th>Version</th></tr>
+            </thead>
+            <tbody>
+              ${sw.map(s => `<tr><td>${s.name}</td><td>${s.ver}</td></tr>`).join('')}
+              ${sw.length === 0 ? '<tr><td colspan="2" style="text-align:center">No records found</td></tr>' : ''}
+            </tbody>
+          </table>
+
+          <div class="section-title">Equipment</div>
+          <table>
+            <thead>
+              <tr><th>Equipment Name</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              ${equipList.map(e => `<tr><td>${e.name}</td><td><span class="status ${e.status === 'Working' ? 'status-working' : 'status-faulty'}">${e.status}</span></td></tr>`).join('')}
+              ${equipList.length === 0 ? '<tr><td colspan="2" style="text-align:center">No records found</td></tr>' : ''}
+            </tbody>
+          </table>
+
+          <div style="margin-top: 50px; font-size: 12px; color: #999; text-align: center;">
+            Generated by ERP System - ${new Date().toLocaleString()}
+          </div>
+          <script>
+            window.onload = () => {
+              window.print();
+              // window.close(); // Optional: close window after printing
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(html);
+    printWindow.document.close();
+  };
+
   const shareWA = (n: string, p: number, t: number) => {
     window.open(`https://wa.me/?text=*PAYROLL*%0A*Name:* ${n}%0A*Presents:* ${p}%0A*Total:* Rs. ${t}`, '_blank');
   };
@@ -655,8 +750,14 @@ export default function App() {
   // Filtered Data
   const filteredStaff = staff.filter(s => s.n.toLowerCase().includes(searchTerm.toLowerCase()) || s.id.includes(searchTerm));
   const filteredEquip = equip.filter(e => e.n.toLowerCase().includes(searchTerm.toLowerCase()) || e.s.toLowerCase().includes(searchTerm));
-  const filteredLabSys = labSys.filter(l => l.id.toLowerCase().includes(searchTerm.toLowerCase()));
-  const filteredLabSw = labSw.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredLabSys = labSys.filter(l => 
+    l.id.toLowerCase().includes(searchTerm.toLowerCase()) && 
+    (activeTab === 'equip' ? (l.staffId === 'global' || !l.staffId) : true)
+  );
+  const filteredLabSw = labSw.filter(s => 
+    s.name.toLowerCase().includes(searchTerm.toLowerCase()) && 
+    (activeTab === 'equip' ? (s.staffId === 'global' || !s.staffId) : true)
+  );
   const filteredComp = comp.filter(c => c.d.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredSched = sched.filter(s => s.sub.toLowerCase().includes(searchTerm.toLowerCase()) || s.inst.toLowerCase().includes(searchTerm));
 
@@ -702,7 +803,7 @@ export default function App() {
           <NavItem active={activeTab === 'salary'} onClick={() => setActiveTab('salary')} icon={<Wallet size={18} />} label="Payroll & Attendance" />
           
           <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Assets & Ops</p>
-          <NavItem active={activeTab === 'equip'} onClick={() => setActiveTab('equip')} icon={<Package size={18} />} label="Inventory Control" />
+          {isAdmin && <NavItem active={activeTab === 'equip'} onClick={() => setActiveTab('equip')} icon={<Package size={18} />} label="Inventory Control" />}
           <NavItem active={activeTab === 'comp'} onClick={() => setActiveTab('comp')} icon={<AlertTriangle size={18} />} label="Complaint Tracker" />
           <NavItem active={activeTab === 'lab'} onClick={() => setActiveTab('lab')} icon={<Monitor size={18} />} label="Lab Inventory" />
           <NavItem active={activeTab === 'sched'} onClick={() => setActiveTab('sched')} icon={<Calendar size={18} />} label="Lab Schedule" />
@@ -804,7 +905,7 @@ export default function App() {
                       label="Lab Assets" 
                       value={equip.length + labSys.length} 
                       color="#ff6600" 
-                      onClick={() => setActiveTab('equip')}
+                      onClick={isAdmin ? () => setActiveTab('equip') : () => setActiveTab('lab')}
                       theme={theme}
                     />
                     <StatCard 
@@ -850,24 +951,32 @@ export default function App() {
                           }
                         </p>
                       </div>
-                      {isAdmin && (
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs font-bold text-[#888] uppercase tracking-widest">View Lab For:</span>
-                          <select 
-                            className={cn(
-                              "p-2 rounded-lg outline-none border text-sm font-bold",
-                              theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-100 border-gray-200"
-                            )}
-                            value={selectedLabStaffId}
-                            onChange={(e) => setSelectedLabStaffId(e.target.value)}
-                          >
-                            {staff.filter(s => s.lab).map(s => (
-                              <option key={s.id} value={s.id}>{s.n} ({s.lab})</option>
-                            ))}
-                            {staff.filter(s => s.lab).length === 0 && <option value="">No Labs Assigned</option>}
-                          </select>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-3">
+                        <button 
+                          onClick={handlePrintLabInventory}
+                          className="flex items-center gap-2 bg-[#555] text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-[#666] transition-colors"
+                        >
+                          <Printer size={14} /> Print Inventory
+                        </button>
+                        {isAdmin && (
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-bold text-[#888] uppercase tracking-widest">View Lab For:</span>
+                            <select 
+                              className={cn(
+                                "p-2 rounded-lg outline-none border text-sm font-bold",
+                                theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-100 border-gray-200"
+                              )}
+                              value={selectedLabStaffId}
+                              onChange={(e) => setSelectedLabStaffId(e.target.value)}
+                            >
+                              {staff.filter(s => s.lab).map((s, i) => (
+                                <option key={s.docId || `${s.id}-${i}`} value={s.id}>{s.n} ({s.lab})</option>
+                              ))}
+                              {staff.filter(s => s.lab).length === 0 && <option value="">No Labs Assigned</option>}
+                            </select>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {!selectedLabStaffId && isAdmin ? (
@@ -900,7 +1009,7 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {labSys.filter(l => l.staffId === (isAdmin ? selectedLabStaffId : currentUser.id)).map((l, idx) => (
-                              <div key={l.id} className={cn(
+                              <div key={l.docId || `${l.id}-${idx}`} className={cn(
                                 "p-4 rounded-xl border group relative",
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
@@ -941,7 +1050,7 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {labSw.filter(s => s.staffId === (isAdmin ? selectedLabStaffId : currentUser.id)).map((s, idx) => (
-                              <div key={idx} className={cn(
+                              <div key={s.docId || `${s.name}-${idx}`} className={cn(
                                 "p-4 rounded-xl border group relative",
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
@@ -979,7 +1088,7 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {labEquip.filter(e => e.staffId === (isAdmin ? selectedLabStaffId : currentUser.id)).map((e, idx) => (
-                              <div key={idx} className={cn(
+                              <div key={e.docId || `${e.name}-${idx}`} className={cn(
                                 "p-4 rounded-xl border group relative",
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
@@ -1038,7 +1147,7 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredStaff.map((s, i) => (
-                          <tr key={s.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                          <tr key={s.docId || i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                             <td className="py-4 px-4">{s.id}</td>
                             <td className="py-4 px-4 font-semibold">{s.n}</td>
                             <td className="py-4 px-4">{s.r}</td>
@@ -1090,8 +1199,8 @@ export default function App() {
                           onChange={(e) => setAttDate(e.target.value)}
                         />
                         <div className="space-y-2">
-                          {staff.map(e => (
-                            <div key={e.id} className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/5">
+                          {staff.map((e, i) => (
+                            <div key={e.docId || `${e.id}-${i}`} className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/5">
                               <span className="text-sm font-semibold">{e.n}</span>
                               <div className="flex gap-4">
                                 <button 
@@ -1164,7 +1273,7 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody className="text-sm">
-                          {staff.filter(e => isAdmin || e.id === currentUser.id).map(e => {
+                          {staff.filter(e => isAdmin || e.id === currentUser.id).map((e, i) => {
                             let p = 0;
                             let deductibleAbsents = 0;
                             Object.entries(att).forEach(([dateStr, day]) => {
@@ -1186,7 +1295,7 @@ export default function App() {
                               total = p * baseSalary;
                             }
                             return (
-                              <tr key={e.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                              <tr key={e.docId || `${e.id}-${i}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                                 <td className="py-4 px-4 font-semibold">
                                   {e.n}
                                   <span className="ml-2 text-[8px] opacity-50 uppercase tracking-tighter">({e.type || 'Daily'})</span>
@@ -1218,7 +1327,7 @@ export default function App() {
                 </div>
               )}
 
-              {activeTab === 'equip' && (
+              {activeTab === 'equip' && isAdmin && (
                 <div className={cn(
                   "p-8 rounded-2xl border",
                   theme === 'dark' ? "bg-[#0d0d15] border-white/5" : "bg-white border-gray-200"
@@ -1227,7 +1336,7 @@ export default function App() {
                     <h3 className="text-xl font-bold">Inventory Control</h3>
                     <div className="flex gap-2">
                       <button onClick={() => exportData('pdf')} className="flex items-center gap-2 bg-[#555] text-white px-4 py-2 rounded-lg text-xs font-bold"><Printer size={14} /> Print</button>
-                      {isAdmin && (
+                      {currentUser?.id === '01' && (
                         <>
                           <button onClick={() => { setModalMode('equip'); setEditId(-1); setIsModalOpen(true); }} className="flex items-center gap-2 bg-[#00f2ff] text-white px-4 py-2 rounded-lg text-xs font-bold"><Plus size={14} /> Hardware</button>
                           <button onClick={() => { setModalMode('lab_sys'); setEditId(-1); setIsModalOpen(true); }} className="flex items-center gap-2 bg-[#ff6600] text-white px-4 py-2 rounded-lg text-xs font-bold"><Plus size={14} /> PC Specs</button>
@@ -1254,7 +1363,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredEquip.map((x, i) => (
-                            <tr key={i} className={cn(
+                            <tr key={x.docId || i} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1267,7 +1376,7 @@ export default function App() {
                                 )}>{x.st || 'Working'}</span>
                               </td>
                               <td className="py-4 px-4 flex gap-2">
-                                {isAdmin && (
+                                {currentUser?.id === '01' && (
                                   <>
                                     <button onClick={() => openEditModal('equip', x)} className="p-1.5 bg-[#ffcc00] text-black rounded"><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('equip', x)} className="p-1.5 bg-[#ff3f34] text-white rounded"><Trash2 size={12} /></button>
@@ -1297,7 +1406,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredLabSys.map((x, i) => (
-                            <tr key={i} className={cn(
+                            <tr key={x.docId || i} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1306,7 +1415,7 @@ export default function App() {
                               <td className="py-4 px-4">{x.ram}</td>
                               <td className="py-4 px-4">{x.disk}</td>
                               <td className="py-4 px-4 flex gap-2">
-                                {isAdmin && (
+                                {currentUser?.id === '01' && (
                                   <>
                                     <button onClick={() => openEditModal('lab_sys', x)} className="p-1.5 bg-[#ffcc00] text-black rounded"><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('lab_sys', x)} className="p-1.5 bg-[#ff3f34] text-white rounded"><Trash2 size={12} /></button>
@@ -1335,7 +1444,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredLabSw.map((x, i) => (
-                            <tr key={i} className={cn(
+                            <tr key={x.docId || i} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1343,7 +1452,7 @@ export default function App() {
                               <td className="py-4 px-4">{x.ver}</td>
                               <td className="py-4 px-4">{x.pc}</td>
                               <td className="py-4 px-4 flex gap-2">
-                                {isAdmin && (
+                                {currentUser?.id === '01' && (
                                   <>
                                     <button onClick={() => openEditModal('lab_sw', x)} className="p-1.5 bg-[#ffcc00] text-black rounded"><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('lab_sw', x)} className="p-1.5 bg-[#ff3f34] text-white rounded"><Trash2 size={12} /></button>
@@ -1385,7 +1494,7 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredComp.map((x, i) => (
-                          <tr key={i} className="border-b border-white/5">
+                          <tr key={x.docId || i} className="border-b border-white/5">
                             <td className="py-4 px-4">{x.d}</td>
                             <td className="py-4 px-4 font-semibold">{x.a}</td>
                             <td className="py-4 px-4">
@@ -1429,6 +1538,7 @@ export default function App() {
                     <table className="w-full text-left">
                       <thead>
                         <tr className="text-[#ff6600] text-[10px] uppercase tracking-wider border-b border-white/5">
+                          <th className="pb-4 px-4">Lab</th>
                           <th className="pb-4 px-4">Day</th>
                           <th className="pb-4 px-4">Time</th>
                           <th className="pb-4 px-4">Subject</th>
@@ -1438,9 +1548,10 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredSched.map((x, i) => (
-                          <tr key={i} className="border-b border-white/5">
+                          <tr key={x.docId || i} className="border-b border-white/5">
+                            <td className="py-4 px-4 font-bold text-[#00f2ff]">{x.lab || 'N/A'}</td>
                             <td className="py-4 px-4 font-bold">{x.day}</td>
-                            <td className="py-4 px-4 text-[#00f2ff]">{x.st} - {x.et}</td>
+                            <td className="py-4 px-4 text-[#00f2ff]">{formatTime(x.st)} - {formatTime(x.et)}</td>
                             <td className="py-4 px-4 font-semibold">{x.sub}</td>
                             <td className="py-4 px-4">{x.inst}</td>
                             <td className="py-4 px-4 flex gap-2">
@@ -1519,12 +1630,12 @@ export default function App() {
                         return isFromAdmin;
                       }
                       return false;
-                    }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map(note => {
+                    }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((note, i) => {
                       const noteAuthor = staff.find(s => s.id === note.staffId);
                       const replyAuthor = note.replyStaffId ? staff.find(s => s.id === note.replyStaffId) : staff.find(s => s.r === 'Admin');
                       
                       return (
-                        <div key={note.id} className={cn(
+                        <div key={note.docId || `${note.id}-${i}`} className={cn(
                           "p-6 rounded-2xl border transition-all relative group",
                           theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
                         )}>
@@ -1635,7 +1746,6 @@ export default function App() {
                                       onClick={() => {
                                         const updatedNotes = notes.map(n => n.id === note.id ? { ...n, isClosed: false } : n);
                                         setNotes(updatedNotes);
-                                        syncToGoogle('note_reopen', { id: note.id });
                                       }}
                                       className="text-[9px] font-bold text-[#00ff88] uppercase tracking-widest hover:underline"
                                     >
@@ -1647,7 +1757,6 @@ export default function App() {
                                       onClick={() => {
                                         const updatedNotes = notes.map(n => n.id === note.id ? { ...n, isClosed: true } : n);
                                         setNotes(updatedNotes);
-                                        syncToGoogle('note_close', { id: note.id });
                                       }}
                                       className="text-[9px] font-bold text-[#ff4444] uppercase tracking-widest hover:underline"
                                     >
@@ -1774,14 +1883,15 @@ export default function App() {
               )}
             >
               <h3 className="text-2xl font-bold text-[#00f2ff] mb-6 uppercase tracking-wider">
-                {editId === -1 ? "New" : "Edit"} {modalMode.replace('_', ' ')}
+                {!editItem ? "New" : "Edit"} {modalMode.replace('_', ' ')}
               </h3>
               
               <ModalForm 
+                key={editItem?.docId || 'new'}
                 mode={modalMode} 
-                initialData={editId === -1 ? null : (modalMode === 'staff' ? staff[editId] : modalMode === 'equip' ? equip[editId] : modalMode === 'lab_sys' ? labSys[editId] : modalMode === 'lab_sw' ? labSw[editId] : modalMode === 'comp' ? comp[editId] : sched[editId])}
+                initialData={editItem}
                 onSave={handleSave}
-                onCancel={() => setIsModalOpen(false)}
+                onCancel={() => { setIsModalOpen(false); setEditItem(null); }}
                 theme={theme}
               />
             </motion.div>
@@ -2016,7 +2126,6 @@ export default function App() {
                         const newStaff = staff.map(s => s.id === currentUser.id ? updatedUser : s);
                         setStaff(newStaff);
                         setCurrentUser(updatedUser);
-                        syncToGoogle('staff', updatedUser);
                         setIsProfileModalOpen(false);
                       }}
                       className="flex-1 py-3 bg-[#00f2ff] text-white font-bold rounded-xl"
@@ -2059,7 +2168,7 @@ export default function App() {
                   <p className="text-center text-[#888] py-8 italic">No edit history found.</p>
                 ) : (
                   historyToShow.slice().reverse().map((item, idx) => (
-                    <div key={idx} className="relative pl-6 border-l-2 border-[#00f2ff]/30">
+                    <div key={item.timestamp || idx} className="relative pl-6 border-l-2 border-[#00f2ff]/30">
                       <div className="absolute left-[-5px] top-0 w-2 h-2 rounded-full bg-[#00f2ff]" />
                       <p className="text-[10px] font-bold text-[#888] uppercase mb-2">
                         {format(new Date(item.timestamp), 'PPpp')}
@@ -2126,8 +2235,8 @@ export default function App() {
                     onChange={(e) => setNoteTarget(e.target.value)}
                   >
                     <option value="all">All Staff Members</option>
-                    {staff.filter(s => s.r !== 'Admin').map(s => (
-                      <option key={s.id} value={s.id}>{s.n} ({s.id})</option>
+                    {staff.filter(s => s.r !== 'Admin').map((s, i) => (
+                      <option key={s.docId || `${s.id}-${i}`} value={s.id}>{s.n} ({s.id})</option>
                     ))}
                   </select>
                 </div>
@@ -2165,13 +2274,6 @@ export default function App() {
                         isRead: false
                       } : n);
                       setNotes(updatedNotes);
-                      syncToGoogle(isEdit ? 'note_reply_edit' : 'note_reply', { 
-                        id: selectedNote.id, 
-                        reply: replyText, 
-                        replyStaffId: currentUser.id,
-                        replyEditedTimestamp: isEdit ? new Date().toISOString() : undefined,
-                        replyHistory: isEdit ? updatedNotes.find(un => un.id === selectedNote.id)?.replyHistory : undefined
-                      });
                     } else if (selectedNote) {
                       if (!isAdmin && selectedNote.reply) {
                         // Staff Reply to Admin
@@ -2182,7 +2284,6 @@ export default function App() {
                           isRead: false
                         } : n);
                         setNotes(updatedNotes);
-                        syncToGoogle('note_staff_reply', { id: selectedNote.id, staffReply: replyText });
                       } else {
                         // Edit Note
                         const updatedNotes = notes.map(n => n.id === selectedNote.id ? {
@@ -2192,11 +2293,7 @@ export default function App() {
                           history: [...(n.history || []), { text: n.text, timestamp: n.editedTimestamp || n.timestamp }]
                         } : n);
                         setNotes(updatedNotes);
-                        syncToGoogle('note_edit', { 
-                          id: selectedNote.id, 
-                          text: noteText,
-                          history: updatedNotes.find(un => un.id === selectedNote.id)?.history
-                        });
+                        setIsNoteModalOpen(false);
                       }
                     } else {
                       // New Note
@@ -2210,7 +2307,6 @@ export default function App() {
                         isRead: false
                       };
                       setNotes([newNote, ...notes]);
-                      syncToGoogle('note_create', newNote);
                     }
                     setIsNoteModalOpen(false);
                   }}
@@ -2243,6 +2339,91 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {isFirstLoginModalOpen && (
+          <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className={cn(
+                "relative w-full max-w-md p-8 rounded-3xl border shadow-2xl",
+                theme === 'dark' ? "bg-[#0d0d15] border-[#00f2ff]/30" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="text-center mb-6">
+                <Lock size={48} className="mx-auto text-[#00f2ff] mb-4" />
+                <h3 className="text-2xl font-bold mb-2">Change Password</h3>
+                <p className="text-sm text-[#888]">Welcome! Since this is your first login, please set a new password for your account.</p>
+              </div>
+              
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="text-[10px] font-bold text-[#888] uppercase mb-1 block">New Password</label>
+                  <input 
+                    type="password" 
+                    className={cn(
+                      "w-full p-4 rounded-xl outline-none border",
+                      theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-50 border-gray-200"
+                    )}
+                    placeholder="Enter new password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-[#888] uppercase mb-1 block">Confirm New Password</label>
+                  <input 
+                    type="password" 
+                    className={cn(
+                      "w-full p-4 rounded-xl outline-none border",
+                      theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-50 border-gray-200"
+                    )}
+                    placeholder="Confirm new password"
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setIsFirstLoginModalOpen(false)}
+                  className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl font-bold"
+                >
+                  LATER
+                </button>
+                <button 
+                  onClick={async () => {
+                    if (!newPassword || newPassword !== confirmNewPassword) {
+                      alert("Passwords do not match or are empty!");
+                      return;
+                    }
+                    if (currentUser && currentUser.docId) {
+                      await updateDoc(doc(db, 'staff', currentUser.docId), {
+                        p: newPassword,
+                        firstLogin: false
+                      });
+                      setCurrentUser({ ...currentUser, p: newPassword, firstLogin: false });
+                      setIsFirstLoginModalOpen(false);
+                      setNewPassword('');
+                      setConfirmNewPassword('');
+                    }
+                  }}
+                  className="flex-1 py-3 bg-[#00f2ff] text-white font-bold rounded-xl"
+                >
+                  UPDATE PASSWORD
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
       </AnimatePresence>
     </div>
   );
@@ -2286,7 +2467,7 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
     }, 1500);
   };
 
-  const handleChangePassword = () => {
+  const handleChangePassword = async () => {
     if (!changePassStaffId.trim() || !oldPassword.trim() || !newPassword.trim()) {
       setStatusModal({ show: true, type: 'error', message: 'Please fill all fields' });
       return;
@@ -2304,11 +2485,9 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
       return;
     }
 
-    setStaff(prev => {
-      const newStaff = prev.map(s => String(s.id) === String(changePassStaffId) ? { ...s, p: newPassword } : s);
-      localStorage.setItem('erp_staff', JSON.stringify(newStaff));
-      return newStaff;
-    });
+    if (staffMember.docId) {
+      await updateDoc(doc(db, 'staff', staffMember.docId), { p: newPassword });
+    }
     
     setIsChangePassModalOpen(false);
     setChangePassStaffId('');
@@ -2653,8 +2832,20 @@ function StatCard({ icon, label, value, color, onClick, theme }: { icon: React.R
   );
 }
 
-function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: string, initialData: any, onSave: (data: any) => void, onCancel: () => void, theme: string }) {
-  const [formData, setFormData] = useState(initialData || {});
+function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: string, initialData: any, onSave: (data: any) => void, onCancel: () => void, theme: string, key?: string }) {
+  const [formData, setFormData] = useState(() => {
+    const data = initialData || {};
+    // Format time strings for input type="time"
+    if (mode === 'sched') {
+      if (data.st && data.st.includes('T')) {
+        data.st = format(new Date(data.st), 'HH:mm');
+      }
+      if (data.et && data.et.includes('T')) {
+        data.et = format(new Date(data.et), 'HH:mm');
+      }
+    }
+    return data;
+  });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -2753,6 +2944,7 @@ function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: strin
           </div>
           <input name="sub" placeholder="Subject" className={inputClass} value={formData.sub || ''} onChange={handleChange} />
           <input name="inst" placeholder="Instructor" className={inputClass} value={formData.inst || ''} onChange={handleChange} />
+          <input name="lab" placeholder="Lab Name / Room" className={inputClass} value={formData.lab || ''} onChange={handleChange} />
         </>
       )}
 

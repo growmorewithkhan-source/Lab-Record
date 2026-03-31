@@ -12,12 +12,15 @@ export interface Staff {
   pic?: string; // Profile Picture URL
   lab?: string; // Assigned Lab Name
   type?: 'Daily' | 'Permanent'; // Staff Type
+  firstLogin?: boolean; // Whether it is the user's first login
+  docId?: string;
 }
 
 export interface Equipment {
   n: string; // Name
   s: string; // Serial
   st: 'Working' | 'Faulty'; // Status
+  docId?: string;
 }
 
 export interface LabSys {
@@ -27,6 +30,7 @@ export interface LabSys {
   ram: string;
   disk: string;
   count: number;
+  docId?: string;
 }
 
 export interface LabSw {
@@ -34,6 +38,7 @@ export interface LabSw {
   staffId: string;
   name: string;
   ver: string;
+  docId?: string;
 }
 
 export interface LabEquip {
@@ -41,12 +46,14 @@ export interface LabEquip {
   staffId: string;
   name: string;
   status: 'Working' | 'Faulty';
+  docId?: string;
 }
 
 export interface Complaint {
   d: string; // Description
   a: string; // Assignee
   p: 'Low' | 'High' | 'Critical'; // Priority
+  docId?: string;
 }
 
 export interface Schedule {
@@ -55,6 +62,7 @@ export interface Schedule {
   et: string; // End time
   sub: string; // Subject
   inst: string; // Instructor
+  docId?: string;
 }
 
 export interface AttendanceRecord {
@@ -84,6 +92,7 @@ export interface Note {
   isClosed?: boolean;
   history?: { text: string; timestamp: string }[];
   replyHistory?: { text: string; timestamp: string }[];
+  docId?: string;
 }
 
 export type TabType = 'dash' | 'staff' | 'salary' | 'equip' | 'comp' | 'sched' | 'reports' | 'notes' | 'lab';
