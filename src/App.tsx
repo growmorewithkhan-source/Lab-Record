@@ -80,6 +80,19 @@ import {
   getDocs
 } from 'firebase/firestore';
 
+const getLightModeColor = (color: string) => {
+  switch (color.toLowerCase()) {
+    case '#00f2ff': return '#0078d4';
+    case '#00ff88': return '#008a4e';
+    case '#ff6600': return '#c2410c';
+    case '#ff3f34': return '#b91c1c';
+    case '#ffcc00': return '#a16207';
+    case '#ff6600': return '#c2410c';
+    case '#ff3f34': return '#dc2626';
+    default: return color;
+  }
+};
+
 export default function App() {
   // State
   const [activeTab, setActiveTab] = useState<TabType>('dash');
@@ -138,11 +151,11 @@ export default function App() {
       if (user) {
         setIsAuthReady(true);
       } else {
-        signInAnonymously(auth).catch((err) => {
-          console.error("Anonymous Auth Error (likely disabled in console):", err);
-          // Proceed anyway, firestore rules will determine access
-          setIsAuthReady(true);
-        });
+        // If no user is signed in, we still set isAuthReady to true
+        // to allow the app to proceed. If Firestore rules require auth,
+        // listeners will fail with permission errors, but we avoid the
+        // admin-restricted-operation error from forced anonymous sign-in.
+        setIsAuthReady(true);
       }
     });
 
@@ -239,12 +252,19 @@ export default function App() {
   const [profilePicUrl, setProfilePicUrl] = useState('');
   const [modalMode, setModalMode] = useState<TabType | 'lab_sys' | 'lab_sw' | 'lab_equip'>('staff');
   const [editId, setEditId] = useState<number | -1>(-1);
-  const [currentUser, setCurrentUser] = useState<Staff | null>(() => {
-    const saved = localStorage.getItem('erp_current_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [currentUser, setCurrentUser] = useState<Staff | null>(null);
 
   const isAdmin = currentUser?.r === 'Admin' || currentUser?.id === '01';
+
+  useEffect(() => {
+    if (currentUser) {
+      const updatedUser = staff.find(s => s.id === currentUser.id);
+      if (updatedUser && JSON.stringify(updatedUser) !== JSON.stringify(currentUser)) {
+        setCurrentUser(updatedUser);
+      }
+    }
+  }, [staff, currentUser]);
+
 
   useEffect(() => {
     if (currentUser && !isAdmin) {
@@ -253,11 +273,8 @@ export default function App() {
   }, [currentUser, isAdmin]);
 
   useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem('erp_current_user', JSON.stringify(currentUser));
-    } else {
-      localStorage.removeItem('erp_current_user');
-    }
+    // We no longer persist currentUser to localStorage to force login on every session
+    // as per user request: "jab b koi click kary to wo pehly login page osy ana chaheyy"
   }, [currentUser]);
 
   useEffect(() => {
@@ -269,9 +286,10 @@ export default function App() {
     const cleanPass = String(pass).trim();
     
     const user = staff.find(s => {
-      const sId = String(s.id).trim().toLowerCase();
-      const sName = String(s.n).trim().toLowerCase();
-      const sPass = String(s.p).trim();
+      if (!s) return false;
+      const sId = String(s.id || '').trim().toLowerCase();
+      const sName = String(s.n || '').trim().toLowerCase();
+      const sPass = String(s.p || '').trim();
       
       return (sId === cleanInput || 
               parseInt(sId) === parseInt(cleanInput) || 
@@ -407,6 +425,11 @@ export default function App() {
       }
 
       if (dataWithDefaults.docId) {
+        // Preserve pic if not provided in formData
+        const existingStaff = staff.find(s => s.docId === dataWithDefaults.docId);
+        if (existingStaff && !dataWithDefaults.pic) {
+          dataWithDefaults.pic = existingStaff.pic;
+        }
         await updateDoc(doc(db, 'staff', dataWithDefaults.docId), dataWithDefaults);
       } else {
         dataWithDefaults.firstLogin = true; // New staff must change password on first login
@@ -564,7 +587,7 @@ export default function App() {
       autoTable(doc, {
         startY: 45,
         head: [['Name', 'Serial', 'Status']],
-        body: equip.map(x => [x.n, x.s, x.st])
+        body: filteredEquip.map(x => [x.n, x.s, x.st])
       });
 
       const finalY = (doc as any).lastAutoTable.finalY || 50;
@@ -572,7 +595,7 @@ export default function App() {
       autoTable(doc, {
         startY: finalY + 15,
         head: [['Staff', 'PC ID', 'Gen', 'RAM', 'Disk', 'Qty']],
-        body: labSys.map(x => [staff.find(s => s.id === x.staffId)?.n || 'Unknown', x.id, x.gen, x.ram, x.disk, x.count])
+        body: filteredLabSys.map(x => [staff.find(s => s.id === x.staffId)?.n || 'Unknown', x.id, x.gen, x.ram, x.disk, x.count])
       });
 
       const finalY2 = (doc as any).lastAutoTable.finalY || finalY + 20;
@@ -580,15 +603,7 @@ export default function App() {
       autoTable(doc, {
         startY: finalY2 + 15,
         head: [['Staff', 'Name', 'Version']],
-        body: labSw.map(x => [staff.find(s => s.id === x.staffId)?.n || 'Unknown', x.name, x.ver])
-      });
-
-      const finalY3 = (doc as any).lastAutoTable.finalY || finalY2 + 20;
-      doc.text("Lab Equipment", 14, finalY3 + 10);
-      autoTable(doc, {
-        startY: finalY3 + 15,
-        head: [['Staff', 'Name', 'Status']],
-        body: labEquip.map(x => [staff.find(s => s.id === x.staffId)?.n || 'Unknown', x.name, x.status])
+        body: filteredLabSw.map(x => [staff.find(s => s.id === x.staffId)?.n || 'Unknown', x.name, x.ver])
       });
 
       doc.save("Inventory_Report.pdf");
@@ -748,18 +763,18 @@ export default function App() {
   };
 
   // Filtered Data
-  const filteredStaff = staff.filter(s => s.n.toLowerCase().includes(searchTerm.toLowerCase()) || s.id.includes(searchTerm));
-  const filteredEquip = equip.filter(e => e.n.toLowerCase().includes(searchTerm.toLowerCase()) || e.s.toLowerCase().includes(searchTerm));
+  const filteredStaff = staff.filter(s => (s.n || '').toLowerCase().includes((searchTerm || '').toLowerCase()) || (s.id || '').includes(searchTerm || ''));
+  const filteredEquip = equip.filter(e => (e.n || '').toLowerCase().includes((searchTerm || '').toLowerCase()) || (e.s || '').toLowerCase().includes(searchTerm || ''));
   const filteredLabSys = labSys.filter(l => 
-    l.id.toLowerCase().includes(searchTerm.toLowerCase()) && 
+    (l.id || '').toLowerCase().includes((searchTerm || '').toLowerCase()) && 
     (activeTab === 'equip' ? (l.staffId === 'global' || !l.staffId) : true)
   );
   const filteredLabSw = labSw.filter(s => 
-    s.name.toLowerCase().includes(searchTerm.toLowerCase()) && 
+    (s.name || '').toLowerCase().includes((searchTerm || '').toLowerCase()) && 
     (activeTab === 'equip' ? (s.staffId === 'global' || !s.staffId) : true)
   );
-  const filteredComp = comp.filter(c => c.d.toLowerCase().includes(searchTerm.toLowerCase()));
-  const filteredSched = sched.filter(s => s.sub.toLowerCase().includes(searchTerm.toLowerCase()) || s.inst.toLowerCase().includes(searchTerm));
+  const filteredComp = comp.filter(c => (c.d || '').toLowerCase().includes((searchTerm || '').toLowerCase()));
+  const filteredSched = sched.filter(s => (s.sub || '').toLowerCase().includes((searchTerm || '').toLowerCase()) || (s.inst || '').toLowerCase().includes(searchTerm || ''));
 
   if (!currentUser) {
     return <Login onLogin={handleLogin} theme={theme} staff={staff} setStaff={setStaff} />;
@@ -777,7 +792,7 @@ export default function App() {
           theme === 'dark' ? "bg-[#050508] border-white/5" : "bg-white border-gray-200"
         )}>
           <div className="mb-8">
-            <h2 className="font-['Orbitron'] text-2xl font-bold text-[#00f2ff]">SK-OS</h2>
+            <h2 className={cn("font-['Orbitron'] text-2xl font-bold", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>SK-OS</h2>
             <p className="text-[10px] text-[#888] tracking-widest uppercase">ERP ENTERPRISE v28.0</p>
           </div>
 
@@ -787,8 +802,8 @@ export default function App() {
               type="text" 
               placeholder="Search Records..."
               className={cn(
-                "w-full pl-10 pr-4 py-2 rounded-lg text-xs outline-none border-l-4 border-[#00f2ff]",
-                theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-100 border-gray-200"
+                "w-full pl-10 pr-4 py-2 rounded-lg text-xs outline-none border-l-4",
+                theme === 'dark' ? "bg-white/5 border-white/5 border-l-[#00f2ff]" : "bg-gray-100 border-gray-200 border-l-[#2563eb]"
               )}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -796,25 +811,25 @@ export default function App() {
           </div>
 
           <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mb-2 px-2">Main Menu</p>
-          <NavItem active={activeTab === 'dash'} onClick={() => setActiveTab('dash')} icon={<LayoutDashboard size={18} />} label="Dashboard" />
+          <NavItem active={activeTab === 'dash'} onClick={() => setActiveTab('dash')} icon={<LayoutDashboard size={18} />} label="Dashboard" theme={theme} />
           
           <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Human Resources</p>
-          {isAdmin && <NavItem active={activeTab === 'staff'} onClick={() => setActiveTab('staff')} icon={<Users size={18} />} label="Staff Management" />}
-          <NavItem active={activeTab === 'salary'} onClick={() => setActiveTab('salary')} icon={<Wallet size={18} />} label="Payroll & Attendance" />
+          {isAdmin && <NavItem active={activeTab === 'staff'} onClick={() => setActiveTab('staff')} icon={<Users size={18} />} label="Staff Management" theme={theme} />}
+          <NavItem active={activeTab === 'salary'} onClick={() => setActiveTab('salary')} icon={<Wallet size={18} />} label="Payroll & Attendance" theme={theme} />
           
           <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Assets & Ops</p>
-          {isAdmin && <NavItem active={activeTab === 'equip'} onClick={() => setActiveTab('equip')} icon={<Package size={18} />} label="Inventory Control" />}
-          <NavItem active={activeTab === 'comp'} onClick={() => setActiveTab('comp')} icon={<AlertTriangle size={18} />} label="Complaint Tracker" />
-          <NavItem active={activeTab === 'lab'} onClick={() => setActiveTab('lab')} icon={<Monitor size={18} />} label="Lab Inventory" />
-          <NavItem active={activeTab === 'sched'} onClick={() => setActiveTab('sched')} icon={<Calendar size={18} />} label="Lab Schedule" />
+          {isAdmin && <NavItem active={activeTab === 'equip'} onClick={() => setActiveTab('equip')} icon={<Package size={18} />} label="Inventory Control" theme={theme} />}
+          <NavItem active={activeTab === 'comp'} onClick={() => setActiveTab('comp')} icon={<AlertTriangle size={18} />} label="Complaint Tracker" theme={theme} />
+          <NavItem active={activeTab === 'lab'} onClick={() => setActiveTab('lab')} icon={<Monitor size={18} />} label="Lab Inventory" theme={theme} />
+          <NavItem active={activeTab === 'sched'} onClick={() => setActiveTab('sched')} icon={<Calendar size={18} />} label="Lab Schedule" theme={theme} />
           
           <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Communication</p>
-          <NavItem active={activeTab === 'notes'} onClick={() => setActiveTab('notes')} icon={<MessageSquare size={18} />} label="Staff Notes" />
+          <NavItem active={activeTab === 'notes'} onClick={() => setActiveTab('notes')} icon={<MessageSquare size={18} />} label="Staff Notes" theme={theme} />
 
           {isAdmin && (
             <>
               <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Analytics</p>
-              <NavItem active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} icon={<FileText size={18} />} label="Reports Export" />
+              <NavItem active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} icon={<FileText size={18} />} label="Reports Export" theme={theme} />
             </>
           )}
 
@@ -831,7 +846,7 @@ export default function App() {
           <header className="flex justify-between items-center mb-10">
             <div>
               <h3 className="text-xl font-semibold">{isAdmin ? 'Admin Overview' : 'Staff Portal'}</h3>
-              <p className="text-[#00f2ff] text-xs flex items-center gap-1">
+              <p className="text-[#00f2ff] text-xs flex items-center gap-1" style={{ color: theme === 'dark' ? '#00f2ff' : getLightModeColor('#00f2ff') }}>
                 <Clock size={12} /> {format(currentTime, 'PPpp')}
               </p>
             </div>
@@ -856,7 +871,7 @@ export default function App() {
                 )}>{currentUser.n.toUpperCase()}</span>
                 <span className={cn(
                   "text-[10px] font-bold px-2 py-0.5 rounded uppercase",
-                  isAdmin ? "bg-[#00f2ff]/10 text-[#00f2ff]" : "bg-[#00ff88]/10 text-[#00ff88]"
+                  isAdmin ? (theme === 'dark' ? "bg-[#00f2ff]/10 text-[#00f2ff]" : "bg-[#2563eb]/10 text-[#2563eb]") : (theme === 'dark' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#008a4e]/10 text-[#008a4e]")
                 )}>
                   {isAdmin ? 'Admin' : 'Staff'}
                 </span>
@@ -893,10 +908,10 @@ export default function App() {
                 <div className="space-y-8">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <StatCard 
-                      icon={<Users className="text-[#00f2ff]" />} 
+                      icon={<Users className={theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]"} />} 
                       label="Active Staff" 
                       value={staff.length} 
-                      color="#00f2ff" 
+                      color={theme === 'dark' ? "#00f2ff" : "#2563eb"} 
                       onClick={isAdmin ? () => setActiveTab('staff') : undefined}
                       theme={theme}
                     />
@@ -929,7 +944,7 @@ export default function App() {
                     "p-6 rounded-2xl border",
                     theme === 'dark' ? "bg-[#0d0d15] border-white/5" : "bg-white border-gray-200"
                   )}>
-                    <h4 className="text-[#00f2ff] font-bold mb-2">System Message</h4>
+                    <h4 className={cn("font-bold mb-2", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>System Message</h4>
                     <p className="text-sm text-[#888]">Welcome {currentUser.n.split(' ')[0]}. All systems operational. Database synced with cloud.</p>
                   </div>
                 </div>
@@ -943,7 +958,7 @@ export default function App() {
                   )}>
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
                       <div>
-                        <h3 className="text-2xl font-bold text-[#00f2ff] uppercase tracking-wider">Lab Inventory Management</h3>
+                        <h3 className={cn("text-2xl font-bold uppercase tracking-wider", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>Lab Inventory Management</h3>
                         <p className="text-sm text-[#888]">
                           {isAdmin 
                             ? "Manage PC specifications, software, and equipment for assigned labs." 
@@ -981,12 +996,17 @@ export default function App() {
 
                     {!selectedLabStaffId && isAdmin ? (
                       <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
-                        <Monitor size={64} className="mx-auto mb-4 opacity-20 text-[#00f2ff]" />
+                        <Monitor size={64} className={cn("mx-auto mb-4 opacity-20", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")} />
                         <h4 className="text-xl font-bold mb-2">No Labs Assigned Yet</h4>
                         <p className="text-[#888] max-w-md mx-auto">Assign a lab name to a staff member in the Staff Management tab to start managing their inventory.</p>
                         <button 
                           onClick={() => setActiveTab('staff')}
-                          className="mt-6 px-6 py-3 bg-[#00f2ff]/10 text-[#00f2ff] border border-[#00f2ff]/30 rounded-xl font-bold hover:bg-[#00f2ff]/20 transition-all"
+                          className={cn(
+                            "mt-6 px-6 py-3 border rounded-xl font-bold transition-all",
+                            theme === 'dark' 
+                              ? "bg-[#00f2ff]/10 text-[#00f2ff] border-[#00f2ff]/30 hover:bg-[#00f2ff]/20" 
+                              : "bg-[#2563eb]/10 text-[#2563eb] border-[#2563eb]/30 hover:bg-[#2563eb]/20"
+                          )}
                         >
                           GO TO STAFF MANAGEMENT
                         </button>
@@ -999,10 +1019,13 @@ export default function App() {
                           theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
                         )}>
                           <div className="flex justify-between items-center mb-6">
-                            <h4 className="font-bold flex items-center gap-2"><Cpu size={18} className="text-[#00f2ff]" /> PC Systems</h4>
+                            <h4 className="font-bold flex items-center gap-2"><Cpu size={18} className={theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]"} /> PC Systems</h4>
                             <button 
                               onClick={() => { setModalMode('lab_sys'); setEditId(-1); setIsModalOpen(true); }}
-                              className="p-2 bg-[#00f2ff] text-white rounded-lg hover:opacity-80"
+                              className={cn(
+                                "p-2 text-white rounded-lg hover:opacity-80 transition-all",
+                                theme === 'dark' ? "bg-[#00f2ff]" : "bg-[#2563eb]"
+                              )}
                             >
                               <Plus size={14} />
                             </button>
@@ -1014,9 +1037,9 @@ export default function App() {
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
                                 <div className="flex justify-between items-start mb-2">
-                                  <span className="text-xs font-bold text-[#00f2ff]">{l.id}</span>
+                                  <span className={cn("text-xs font-bold", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>{l.id}</span>
                                   <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button onClick={() => openEditModal('lab_sys', l)} className="text-[#ffcc00]"><Edit2 size={12} /></button>
+                                  <button onClick={() => openEditModal('lab_sys', l)} className={cn(theme === 'dark' ? "text-[#ffcc00]" : "text-[#a16207]")}><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('lab_sys', l)} className="text-[#ff3f34]"><Trash2 size={12} /></button>
                                   </div>
                                 </div>
@@ -1040,7 +1063,7 @@ export default function App() {
                           theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
                         )}>
                           <div className="flex justify-between items-center mb-6">
-                            <h4 className="font-bold flex items-center gap-2"><Code size={18} className="text-[#00ff88]" /> Software</h4>
+                            <h4 className="font-bold flex items-center gap-2"><Code size={18} className={theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]"} /> Software</h4>
                             <button 
                               onClick={() => { setModalMode('lab_sw'); setEditId(-1); setIsModalOpen(true); }}
                               className="p-2 bg-[#00ff88] text-white rounded-lg hover:opacity-80"
@@ -1060,7 +1083,7 @@ export default function App() {
                                     <p className="text-[10px] text-[#888] uppercase font-bold">Version: {s.ver}</p>
                                   </div>
                                   <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button onClick={() => openEditModal('lab_sw', s)} className="text-[#ffcc00]"><Edit2 size={12} /></button>
+                                    <button onClick={() => openEditModal('lab_sw', s)} className={cn(theme === 'dark' ? "text-[#ffcc00]" : "text-[#a16207]")}><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('lab_sw', s)} className="text-[#ff3f34]"><Trash2 size={12} /></button>
                                   </div>
                                 </div>
@@ -1078,7 +1101,7 @@ export default function App() {
                           theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
                         )}>
                           <div className="flex justify-between items-center mb-6">
-                            <h4 className="font-bold flex items-center gap-2"><Package size={18} className="text-[#ff6600]" /> Equipment</h4>
+                            <h4 className="font-bold flex items-center gap-2"><Package size={18} className={theme === 'dark' ? "text-[#ff6600]" : "text-[#d97706]"} /> Equipment</h4>
                             <button 
                               onClick={() => { setModalMode('lab_equip'); setEditId(-1); setIsModalOpen(true); }}
                               className="p-2 bg-[#ff6600] text-white rounded-lg hover:opacity-80"
@@ -1101,7 +1124,7 @@ export default function App() {
                                     )}>{e.status}</span>
                                   </div>
                                   <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button onClick={() => openEditModal('lab_equip', e)} className="text-[#ffcc00]"><Edit2 size={12} /></button>
+                                  <button onClick={() => openEditModal('lab_equip', e)} className={cn(theme === 'dark' ? "text-[#ffcc00]" : "text-[#a16207]")}><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('lab_equip', e)} className="text-[#ff3f34]"><Trash2 size={12} /></button>
                                   </div>
                                 </div>
@@ -1132,36 +1155,42 @@ export default function App() {
                     </button>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="text-[#ff6600] text-[10px] uppercase tracking-wider border-b border-white/5">
-                          <th className="pb-4 px-4">ID</th>
-                          <th className="pb-4 px-4">Name</th>
-                          <th className="pb-4 px-4">Role</th>
-                          <th className="pb-4 px-4">Type</th>
-                          <th className="pb-4 px-4">Lab</th>
-                          <th className="pb-4 px-4">Base Salary</th>
-                          <th className="pb-4 px-4">Passkey</th>
-                          <th className="pb-4 px-4">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="text-sm">
-                        {filteredStaff.map((s, i) => (
-                          <tr key={s.docId || i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className={cn(
+                            "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
+                            theme === 'dark' ? "border-white/5" : "border-gray-100"
+                          )}>
+                            <th className="pb-4 px-4">ID</th>
+                            <th className="pb-4 px-4">Name</th>
+                            <th className="pb-4 px-4">Role</th>
+                            <th className="pb-4 px-4">Type</th>
+                            <th className="pb-4 px-4">Lab</th>
+                            <th className="pb-4 px-4">Base Salary</th>
+                            <th className="pb-4 px-4">Passkey</th>
+                            <th className="pb-4 px-4">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-sm">
+                          {filteredStaff.map((s, i) => (
+                            <tr key={s.docId || `staff-${s.id}-${i}`} className={cn(
+                              "border-b transition-colors",
+                              theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
+                            )}>
                             <td className="py-4 px-4">{s.id}</td>
                             <td className="py-4 px-4 font-semibold">{s.n}</td>
                             <td className="py-4 px-4">{s.r}</td>
                             <td className="py-4 px-4">
                               <span className={cn(
                                 "px-2 py-1 rounded text-[10px] font-bold uppercase",
-                                s.type === 'Permanent' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#ffcc00]/10 text-[#ffcc00]"
+                                s.type === 'Permanent' ? (theme === 'dark' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#008a4e]/10 text-[#008a4e]") : (theme === 'dark' ? "bg-[#ffcc00]/10 text-[#ffcc00]" : "bg-[#a16207]/10 text-[#a16207]")
                               )}>
                                 {s.type || 'Daily'}
                               </span>
                             </td>
                             <td className="py-4 px-4">
                               {s.lab ? (
-                                <span className="px-2 py-1 rounded bg-[#00f2ff]/10 text-[#00f2ff] text-[10px] font-bold uppercase">{s.lab}</span>
+                                <span className={cn("px-2 py-1 rounded text-[10px] font-bold uppercase", theme === 'dark' ? "bg-[#00f2ff]/10 text-[#00f2ff]" : "bg-[#2563eb]/10 text-[#2563eb]")}>{s.lab}</span>
                               ) : (
                                 <span className="text-[#888] text-[10px] italic">Not Assigned</span>
                               )}
@@ -1169,7 +1198,7 @@ export default function App() {
                             <td className="py-4 px-4">Rs. {s.s}</td>
                             <td className="py-4 px-4"><code className="text-[#888]">****</code></td>
                             <td className="py-4 px-4 flex gap-2">
-                              <button onClick={() => openEditModal('staff', s)} className="p-2 bg-[#ffcc00] text-black rounded hover:opacity-80"><Edit2 size={14} /></button>
+                              <button onClick={() => openEditModal('staff', s)} className={cn("p-2 rounded hover:opacity-80", theme === 'dark' ? "bg-[#ffcc00] text-black" : "bg-[#a16207] text-white")}><Edit2 size={14} /></button>
                               <button onClick={() => handleDelete('staff', s)} className="p-2 bg-[#ff3f34] text-white rounded hover:opacity-80"><Trash2 size={14} /></button>
                             </td>
                           </tr>
@@ -1200,14 +1229,17 @@ export default function App() {
                         />
                         <div className="space-y-2">
                           {staff.map((e, i) => (
-                            <div key={e.docId || `${e.id}-${i}`} className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/5">
+                            <div key={e.docId || `att-${e.id}-${i}`} className={cn(
+                              "flex items-center justify-between p-3 rounded-lg border",
+                              theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+                            )}>
                               <span className="text-sm font-semibold">{e.n}</span>
                               <div className="flex gap-4">
                                 <button 
                                   onClick={() => setAttendance(e.id, 'Present')}
                                   className={cn(
                                     "flex flex-col items-center gap-1 text-[10px] font-bold",
-                                    att[attDate]?.[e.id]?.status === 'Present' ? "text-[#00ff88]" : "text-[#888]"
+                                    att[attDate]?.[e.id]?.status === 'Present' ? (theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]") : "text-[#888]"
                                   )}
                                 >
                                   <CheckCircle2 size={18} /> P
@@ -1229,11 +1261,14 @@ export default function App() {
                     ) : (
                       <div className="text-center py-8 text-[#888]">
                         <p className="text-sm italic">Attendance is managed by Admin.</p>
-                        <div className="mt-4 p-4 rounded-xl bg-white/5 border border-white/5">
+                        <div className={cn(
+                          "mt-4 p-4 rounded-xl border",
+                          theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+                        )}>
                           <p className="text-xs uppercase font-bold mb-1">Your Status Today</p>
                           <p className={cn(
                             "text-lg font-bold",
-                            att[attDate]?.[currentUser.id]?.status === 'Present' ? "text-[#00ff88]" : "text-[#ff3f34]"
+                            att[attDate]?.[currentUser.id]?.status === 'Present' ? (theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]") : "text-[#ff3f34]"
                           )}>
                             {att[attDate]?.[currentUser.id]?.status || 'Not Marked'}
                           </p>
@@ -1264,7 +1299,10 @@ export default function App() {
                     <div className="overflow-x-auto">
                       <table className="w-full text-left">
                         <thead>
-                          <tr className="text-[#ff6600] text-[10px] uppercase tracking-wider border-b border-white/5">
+                          <tr className={cn(
+                            "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
+                            theme === 'dark' ? "border-white/5" : "border-gray-100"
+                          )}>
                             <th className="pb-4 px-4">Staff Name</th>
                             <th className="pb-4 px-4">Presents</th>
                             <th className="pb-4 px-4">Base</th>
@@ -1295,7 +1333,10 @@ export default function App() {
                               total = p * baseSalary;
                             }
                             return (
-                              <tr key={e.docId || `${e.id}-${i}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                              <tr key={e.docId || `${e.id}-${i}`} className={cn(
+                                "border-b transition-colors",
+                                theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
+                              )}>
                                 <td className="py-4 px-4 font-semibold">
                                   {e.n}
                                   <span className="ml-2 text-[8px] opacity-50 uppercase tracking-tighter">({e.type || 'Daily'})</span>
@@ -1311,7 +1352,7 @@ export default function App() {
                                   ) : `${p} Days`}
                                 </td>
                                 <td className="py-4 px-4">Rs. {e.s}</td>
-                                <td className="py-4 px-4 text-[#00ff88] font-bold">Rs. {total}</td>
+                                <td className={cn("py-4 px-4 font-bold", theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]")}>Rs. {total}</td>
                                 <td className="py-4 px-4">
                                   <button onClick={() => shareWA(e.n, p, total)} className="p-2 bg-[#25D366] text-white rounded hover:opacity-80">
                                     <i className="fab fa-whatsapp text-lg"></i>
@@ -1348,7 +1389,7 @@ export default function App() {
 
                   <div className="space-y-10">
                     <section>
-                      <h4 className="text-[#00f2ff] font-bold mb-4 uppercase text-xs tracking-widest">Hardware Assets</h4>
+                      <h4 className={cn("font-bold mb-4 uppercase text-xs tracking-widest", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>Hardware Assets</h4>
                       <table className="w-full text-left">
                         <thead>
                           <tr className={cn(
@@ -1363,7 +1404,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredEquip.map((x, i) => (
-                            <tr key={x.docId || i} className={cn(
+                            <tr key={x.docId || `equip-${x.s || i}-${i}`} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1372,13 +1413,13 @@ export default function App() {
                               <td className="py-4 px-4">
                                 <span className={cn(
                                   "px-2 py-1 rounded text-[10px] font-bold",
-                                  x.st === 'Working' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#ff3f34]/10 text-[#ff3f34]"
+                                  x.st === 'Working' ? (theme === 'dark' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#008a4e]/10 text-[#008a4e]") : "bg-[#ff3f34]/10 text-[#ff3f34]"
                                 )}>{x.st || 'Working'}</span>
                               </td>
                               <td className="py-4 px-4 flex gap-2">
                                 {currentUser?.id === '01' && (
                                   <>
-                                    <button onClick={() => openEditModal('equip', x)} className="p-1.5 bg-[#ffcc00] text-black rounded"><Edit2 size={12} /></button>
+                                    <button onClick={() => openEditModal('equip', x)} className={cn("p-1.5 rounded", theme === 'dark' ? "bg-[#ffcc00] text-black" : "bg-[#a16207] text-white")}><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('equip', x)} className="p-1.5 bg-[#ff3f34] text-white rounded"><Trash2 size={12} /></button>
                                   </>
                                 )}
@@ -1406,7 +1447,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredLabSys.map((x, i) => (
-                            <tr key={x.docId || i} className={cn(
+                            <tr key={x.docId || `sys-${x.id || i}-${i}`} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1429,7 +1470,7 @@ export default function App() {
                     </section>
 
                     <section>
-                      <h4 className="text-[#00ff88] font-bold mb-4 uppercase text-xs tracking-widest">Software Inventory</h4>
+                      <h4 className={cn("font-bold mb-4 uppercase text-xs tracking-widest", theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]")}>Software Inventory</h4>
                       <table className="w-full text-left">
                         <thead>
                           <tr className={cn(
@@ -1444,7 +1485,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredLabSw.map((x, i) => (
-                            <tr key={x.docId || i} className={cn(
+                            <tr key={x.docId || `sw-${x.name || i}-${i}`} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1454,7 +1495,7 @@ export default function App() {
                               <td className="py-4 px-4 flex gap-2">
                                 {currentUser?.id === '01' && (
                                   <>
-                                    <button onClick={() => openEditModal('lab_sw', x)} className="p-1.5 bg-[#ffcc00] text-black rounded"><Edit2 size={12} /></button>
+                                    <button onClick={() => openEditModal('lab_sw', x)} className={cn("p-1.5 rounded", theme === 'dark' ? "bg-[#ffcc00] text-black" : "bg-[#a16207] text-white")}><Edit2 size={12} /></button>
                                     <button onClick={() => handleDelete('lab_sw', x)} className="p-1.5 bg-[#ff3f34] text-white rounded"><Trash2 size={12} /></button>
                                   </>
                                 )}
@@ -1485,7 +1526,10 @@ export default function App() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
                       <thead>
-                        <tr className="text-[#ff6600] text-[10px] uppercase tracking-wider border-b border-white/5">
+                        <tr className={cn(
+                          "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
+                          theme === 'dark' ? "border-white/5" : "border-gray-100"
+                        )}>
                           <th className="pb-4 px-4">Issue Description</th>
                           <th className="pb-4 px-4">Assigned To</th>
                           <th className="pb-4 px-4">Priority</th>
@@ -1494,20 +1538,23 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredComp.map((x, i) => (
-                          <tr key={x.docId || i} className="border-b border-white/5">
+                          <tr key={x.docId || `comp-${i}`} className={cn(
+                            "border-b",
+                            theme === 'dark' ? "border-white/5" : "border-gray-100"
+                          )}>
                             <td className="py-4 px-4">{x.d}</td>
                             <td className="py-4 px-4 font-semibold">{x.a}</td>
                             <td className="py-4 px-4">
                               <span className={cn(
                                 "px-2 py-1 rounded text-[10px] font-bold",
                                 x.p === 'Critical' ? "bg-[#ff3f34]/10 text-[#ff3f34]" : 
-                                x.p === 'High' ? "bg-[#ff6600]/10 text-[#ff6600]" : "bg-[#00f2ff]/10 text-[#00f2ff]"
+                                x.p === 'High' ? (theme === 'dark' ? "bg-[#ff6600]/10 text-[#ff6600]" : "bg-[#c2410c]/10 text-[#c2410c]") : (theme === 'dark' ? "bg-[#00f2ff]/10 text-[#00f2ff]" : "bg-[#2563eb]/10 text-[#2563eb]")
                               )}>{x.p || 'Low'}</span>
                             </td>
                             <td className="py-4 px-4 flex gap-2">
                               {isAdmin && (
                                 <>
-                                  <button onClick={() => openEditModal('comp', x)} className="p-2 bg-[#ffcc00] text-black rounded"><Edit2 size={14} /></button>
+                                  <button onClick={() => openEditModal('comp', x)} className={cn("p-2 rounded", theme === 'dark' ? "bg-[#ffcc00] text-black" : "bg-[#a16207] text-white")}><Edit2 size={14} /></button>
                                   <button onClick={() => handleDelete('comp', x)} className="p-2 bg-[#ff3f34] text-white rounded"><Trash2 size={14} /></button>
                                 </>
                               )}
@@ -1537,7 +1584,10 @@ export default function App() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
                       <thead>
-                        <tr className="text-[#ff6600] text-[10px] uppercase tracking-wider border-b border-white/5">
+                        <tr className={cn(
+                          "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
+                          theme === 'dark' ? "border-white/5" : "border-gray-100"
+                        )}>
                           <th className="pb-4 px-4">Lab</th>
                           <th className="pb-4 px-4">Day</th>
                           <th className="pb-4 px-4">Time</th>
@@ -1548,10 +1598,13 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredSched.map((x, i) => (
-                          <tr key={x.docId || i} className="border-b border-white/5">
-                            <td className="py-4 px-4 font-bold text-[#00f2ff]">{x.lab || 'N/A'}</td>
+                          <tr key={x.docId || `sched-${i}`} className={cn(
+                            "border-b transition-colors",
+                            theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
+                          )}>
+                            <td className={cn("py-4 px-4 font-bold", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>{x.lab || 'N/A'}</td>
                             <td className="py-4 px-4 font-bold">{x.day}</td>
-                            <td className="py-4 px-4 text-[#00f2ff]">{formatTime(x.st)} - {formatTime(x.et)}</td>
+                            <td className={cn("py-4 px-4", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>{formatTime(x.st)} - {formatTime(x.et)}</td>
                             <td className="py-4 px-4 font-semibold">{x.sub}</td>
                             <td className="py-4 px-4">{x.inst}</td>
                             <td className="py-4 px-4 flex gap-2">
@@ -1635,7 +1688,7 @@ export default function App() {
                       const replyAuthor = note.replyStaffId ? staff.find(s => s.id === note.replyStaffId) : staff.find(s => s.r === 'Admin');
                       
                       return (
-                        <div key={note.docId || `${note.id}-${i}`} className={cn(
+                        <div key={note.docId || `note-${note.id}-${i}`} className={cn(
                           "p-6 rounded-2xl border transition-all relative group",
                           theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
                         )}>
@@ -1651,7 +1704,7 @@ export default function App() {
                               ) : (
                                 <div className={cn(
                                   "w-10 h-10 rounded-full flex items-center justify-center font-bold uppercase",
-                                  noteAuthor?.r === 'Admin' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#00f2ff]/10 text-[#00f2ff]"
+                                  noteAuthor?.r === 'Admin' ? (theme === 'dark' ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#008a4e]/10 text-[#008a4e]") : (theme === 'dark' ? "bg-[#00f2ff]/10 text-[#00f2ff]" : "bg-[#2563eb]/10 text-[#2563eb]")
                                 )}>
                                   {note.staffName.charAt(0)}
                                 </div>
@@ -1660,7 +1713,10 @@ export default function App() {
                                 <div className="flex items-center gap-2">
                                   <p className="font-bold">{note.staffName} <span className="text-[10px] opacity-50 font-normal">({note.staffId})</span></p>
                                   {note.targetStaffId && (
-                                    <span className="text-[9px] bg-white/5 px-2 py-0.5 rounded text-[#888] uppercase tracking-tighter">
+                                    <span className={cn(
+                                      "text-[9px] px-2 py-0.5 rounded uppercase tracking-tighter",
+                                      theme === 'dark' ? "bg-white/5 text-[#888]" : "bg-gray-100 text-gray-500"
+                                    )}>
                                       To: {note.targetStaffId === 'all' ? 'Everyone' : staff.find(s => s.id === note.targetStaffId)?.n || 'Unknown'}
                                     </span>
                                   )}
@@ -1691,7 +1747,7 @@ export default function App() {
                               {isAdmin && !note.reply && note.staffId !== currentUser.id && (
                                 <button 
                                   onClick={() => { setSelectedNote(note); setReplyText(''); setIsNoteModalOpen(true); }}
-                                  className="text-[10px] font-bold text-[#00f2ff] uppercase tracking-widest hover:underline"
+                                  className={cn("text-[10px] font-bold uppercase tracking-widest hover:underline", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}
                                 >
                                   Reply
                                 </button>
@@ -1699,7 +1755,7 @@ export default function App() {
                               {(note.staffId === currentUser.id) && !note.reply && (
                                 <button 
                                   onClick={() => { setSelectedNote(note); setNoteText(note.text); setIsNoteModalOpen(true); }}
-                                  className="text-[10px] font-bold text-[#ffcc00] uppercase tracking-widest hover:underline"
+                                  className={cn("text-[10px] font-bold uppercase tracking-widest hover:underline", theme === 'dark' ? "text-[#ffcc00]" : "text-[#d97706]")}
                                 >
                                   Edit
                                 </button>
@@ -1721,7 +1777,8 @@ export default function App() {
                           
                           {note.reply && (
                             <div className={cn(
-                              "mt-4 p-4 rounded-xl border-l-4 border-[#00ff88]",
+                              "mt-4 p-4 rounded-xl border-l-4",
+                              theme === 'dark' ? "border-[#00ff88]" : "border-[#008a4e]",
                               theme === 'dark' ? "bg-white/5 border-white/5" : "bg-white border-gray-100"
                             )}>
                               <div className="flex justify-between items-center mb-3">
@@ -1738,7 +1795,7 @@ export default function App() {
                                       {(replyAuthor?.n || 'Admin').charAt(0)}
                                     </div>
                                   )}
-                                  <p className="text-[10px] font-bold text-[#00ff88] uppercase tracking-widest">Admin {replyAuthor?.n || 'Admin'} Reply</p>
+                                  <p className={cn("text-[10px] font-bold uppercase tracking-widest", theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]")}>Admin {replyAuthor?.n || 'Admin'} Reply</p>
                                 </div>
                                 <div className="flex items-center gap-3">
                                   {isAdmin && note.isClosed && (
@@ -1805,7 +1862,8 @@ export default function App() {
 
                           {note.staffReply && (
                             <div className={cn(
-                              "mt-4 p-4 rounded-xl border-l-4 border-[#00f2ff]",
+                              "mt-4 p-4 rounded-xl border-l-4",
+                              theme === 'dark' ? "border-[#00f2ff]" : "border-[#2563eb]",
                               theme === 'dark' ? "bg-white/5 border-white/5" : "bg-white border-gray-100"
                             )}>
                               <div className="flex justify-between items-center mb-3">
@@ -1822,7 +1880,7 @@ export default function App() {
                                       {(noteAuthor?.n || note.staffName || 'Staff').charAt(0)}
                                     </div>
                                   )}
-                                  <p className="text-[10px] font-bold text-[#00f2ff] uppercase tracking-widest">{noteAuthor?.n || 'Staff'} Reply</p>
+                                  <p className={cn("text-[10px] font-bold uppercase tracking-widest", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>{noteAuthor?.n || 'Staff'} Reply</p>
                                 </div>
                                 <div className="flex flex-col items-end">
                                   <p className="text-[10px] text-[#888]">{note.staffReplyTimestamp ? format(new Date(note.staffReplyTimestamp), 'PPpp') : ''}</p>
@@ -1882,7 +1940,7 @@ export default function App() {
                 theme === 'dark' ? "bg-[#0d0d15] border-[#00f2ff]/30" : "bg-white border-gray-200"
               )}
             >
-              <h3 className="text-2xl font-bold text-[#00f2ff] mb-6 uppercase tracking-wider">
+                      <h3 className={cn("text-2xl font-bold mb-6 uppercase tracking-wider", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>
                 {!editItem ? "New" : "Edit"} {modalMode.replace('_', ' ')}
               </h3>
               
@@ -1942,7 +2000,10 @@ export default function App() {
                   <>
                     <button 
                       onClick={() => setIsConfirmModalOpen(false)}
-                      className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl font-bold"
+                      className={cn(
+                        "flex-1 py-3 rounded-xl font-bold border transition-all",
+                        theme === 'dark' ? "bg-white/5 border-white/10 text-white hover:bg-white/10" : "bg-gray-100 border-gray-200 text-gray-700 hover:bg-gray-200"
+                      )}
                     >
                       CANCEL
                     </button>
@@ -2005,7 +2066,10 @@ export default function App() {
               <div className="flex gap-4">
                 <button 
                   onClick={() => setIsReasonModalOpen(false)}
-                  className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl font-bold"
+                  className={cn(
+                    "flex-1 py-3 rounded-xl font-bold border transition-all",
+                    theme === 'dark' ? "bg-white/5 border-white/10 text-white hover:bg-white/10" : "bg-gray-100 border-gray-200 text-gray-700 hover:bg-gray-200"
+                  )}
                 >
                   CANCEL
                 </button>
@@ -2116,23 +2180,52 @@ export default function App() {
                   <div className="flex gap-4">
                     <button 
                       onClick={() => setIsProfileModalOpen(false)}
-                      className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl font-bold"
+                      className={cn(
+                        "flex-1 py-3 rounded-xl font-bold border transition-all",
+                        theme === 'dark' ? "bg-white/5 border-white/10 text-white hover:bg-white/10" : "bg-gray-100 border-gray-200 text-gray-700 hover:bg-gray-200"
+                      )}
                     >
                       CANCEL
                     </button>
                     <button 
-                      onClick={() => {
-                        const updatedUser = { ...currentUser, pic: profilePicUrl };
-                        const newStaff = staff.map(s => s.id === currentUser.id ? updatedUser : s);
-                        setStaff(newStaff);
-                        setCurrentUser(updatedUser);
-                        setIsProfileModalOpen(false);
+                      onClick={async () => {
+                        if (currentUser && currentUser.docId) {
+                          try {
+                            const updatedUser = { ...currentUser, pic: profilePicUrl };
+                            await updateDoc(doc(db, 'staff', currentUser.docId), { pic: profilePicUrl });
+                            setCurrentUser(updatedUser);
+                            setIsProfileModalOpen(false);
+                          } catch (error) {
+                            console.error("Error updating profile picture:", error);
+                            alert("Failed to update profile picture. Please try again.");
+                          }
+                        }
                       }}
                       className="flex-1 py-3 bg-[#00f2ff] text-white font-bold rounded-xl"
                     >
                       UPDATE
                     </button>
                   </div>
+                  {currentUser?.pic && (
+                    <button 
+                      onClick={async () => {
+                        if (currentUser && currentUser.docId) {
+                          try {
+                            const updatedUser = { ...currentUser, pic: '' };
+                            await updateDoc(doc(db, 'staff', currentUser.docId), { pic: '' });
+                            setCurrentUser(updatedUser);
+                            setProfilePicUrl('');
+                            setIsProfileModalOpen(false);
+                          } catch (error) {
+                            console.error("Error clearing profile picture:", error);
+                          }
+                        }
+                      }}
+                      className="w-full mt-4 py-2 text-xs font-bold text-[#ff3f34] hover:underline"
+                    >
+                      CLEAR PROFILE PICTURE
+                    </button>
+                  )}
                 </>
               )}
             </motion.div>
@@ -2168,7 +2261,7 @@ export default function App() {
                   <p className="text-center text-[#888] py-8 italic">No edit history found.</p>
                 ) : (
                   historyToShow.slice().reverse().map((item, idx) => (
-                    <div key={item.timestamp || idx} className="relative pl-6 border-l-2 border-[#00f2ff]/30">
+                    <div key={`history-${item.timestamp}-${idx}`} className="relative pl-6 border-l-2 border-[#00f2ff]/30">
                       <div className="absolute left-[-5px] top-0 w-2 h-2 rounded-full bg-[#00f2ff]" />
                       <p className="text-[10px] font-bold text-[#888] uppercase mb-2">
                         {format(new Date(item.timestamp), 'PPpp')}
@@ -2228,8 +2321,8 @@ export default function App() {
                   <label className="text-[10px] font-bold text-[#888] uppercase mb-2 block">Target Staff</label>
                   <select 
                     className={cn(
-                      "w-full p-4 rounded-xl outline-none border [&>option]:bg-[#151619]",
-                      theme === 'dark' ? "bg-[#151619] border-white/10 text-white" : "bg-gray-50 border-gray-200 text-black"
+                      "w-full p-4 rounded-xl outline-none border transition-all",
+                      theme === 'dark' ? "bg-[#151619] border-white/10 text-white [&>option]:bg-[#151619]" : "bg-gray-50 border-gray-200 text-black [&>option]:bg-white"
                     )}
                     value={noteTarget}
                     onChange={(e) => setNoteTarget(e.target.value)}
@@ -2255,7 +2348,10 @@ export default function App() {
               <div className="flex gap-4">
                 <button 
                   onClick={() => setIsNoteModalOpen(false)}
-                  className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl font-bold"
+                  className={cn(
+                    "flex-1 py-3 rounded-xl font-bold border transition-all",
+                    theme === 'dark' ? "bg-white/5 border-white/10 text-white hover:bg-white/10" : "bg-gray-100 border-gray-200 text-gray-700 hover:bg-gray-200"
+                  )}
                 >
                   CANCEL
                 </button>
@@ -2395,7 +2491,10 @@ export default function App() {
               <div className="flex gap-4">
                 <button 
                   onClick={() => setIsFirstLoginModalOpen(false)}
-                  className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl font-bold"
+                  className={cn(
+                    "flex-1 py-3 rounded-xl font-bold border transition-all",
+                    theme === 'dark' ? "bg-white/5 border-white/10 text-white hover:bg-white/10" : "bg-gray-100 border-gray-200 text-gray-700 hover:bg-gray-200"
+                  )}
                 >
                   LATER
                 </button>
@@ -2473,14 +2572,14 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
       return;
     }
     
-    const staffMember = staff.find(s => String(s.id) === String(changePassStaffId));
+    const staffMember = staff.find(s => s && String(s.id || '') === String(changePassStaffId));
     
     if (!staffMember) {
       setStatusModal({ show: true, type: 'error', message: 'Staff ID not found' });
       return;
     }
     
-    if (String(staffMember.p) !== String(oldPassword)) {
+    if (String(staffMember.p || '') !== String(oldPassword)) {
       setStatusModal({ show: true, type: 'error', message: 'Old password is incorrect' });
       return;
     }
@@ -2497,7 +2596,12 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-gradient-to-br from-[#f1f5f9] to-[#cbd5e1] font-sans text-[#0f172a]">
+    <div className={cn(
+      "min-h-screen flex items-center justify-center relative overflow-hidden font-sans transition-colors duration-500",
+      theme === 'dark' 
+        ? "bg-[#020205] text-[#e0e0e0]" 
+        : "bg-gradient-to-br from-[#f8fafc] to-[#f1f5f9] text-[#0f172a]"
+    )}>
       {/* Loader Overlay */}
       <AnimatePresence>
         {isLoading && (
@@ -2505,29 +2609,55 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-white/85 backdrop-blur-md z-[2000] flex flex-col items-center justify-center"
+            className={cn(
+              "fixed inset-0 z-[2000] flex flex-col items-center justify-center backdrop-blur-md",
+              theme === 'dark' ? "bg-black/80" : "bg-white/85"
+            )}
           >
-            <div className="w-[50px] h-[50px] border-[5px] border-[#e2e8f0] border-t-[#2563eb] rounded-full animate-spin-slow" />
-            <div className="mt-[15px] font-bold text-[#2563eb] text-[12px] tracking-[1px] uppercase">VERIFYING SECURITY...</div>
+            <div className={cn(
+              "w-[50px] h-[50px] border-[5px] rounded-full animate-spin-slow",
+              theme === 'dark' ? "border-white/10 border-t-[#00f2ff]" : "border-[#e2e8f0] border-t-[#2563eb]"
+            )} />
+            <div className={cn(
+              "mt-[15px] font-bold text-[12px] tracking-[1px] uppercase",
+              theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]"
+            )}>VERIFYING SECURITY...</div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Animated Background Shapes */}
-      <div className="absolute -z-10 blur-[80px] rounded-full w-[400px] h-[400px] bg-blue-500/10 -top-[100px] -right-[50px] animate-move" />
-      <div className="absolute -z-10 blur-[80px] rounded-full w-[350px] h-[350px] bg-purple-500/10 -bottom-[50px] -left-[50px] animate-move" />
+      <div className={cn(
+        "absolute -z-10 blur-[80px] rounded-full w-[400px] h-[400px] -top-[100px] -right-[50px] animate-move",
+        theme === 'dark' ? "bg-blue-900/20" : "bg-blue-500/10"
+      )} />
+      <div className={cn(
+        "absolute -z-10 blur-[80px] rounded-full w-[350px] h-[350px] -bottom-[50px] -left-[50px] animate-move",
+        theme === 'dark' ? "bg-purple-900/20" : "bg-purple-500/10"
+      )} />
 
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="login-card animate-slide-up"
+        className={cn(
+          "p-10 rounded-[32px] w-full max-w-[420px] relative z-10 border transition-all duration-500",
+          theme === 'dark' 
+            ? "bg-[#0d0d15] border-white/5 shadow-2xl" 
+            : "bg-white border-slate-200 shadow-xl"
+        )}
       >
         <div className="text-center mb-[30px]">
-          <div className="brand-icon">
+          <div className={cn(
+            "w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl",
+            theme === 'dark' ? "bg-[#00f2ff]/10 text-[#00f2ff]" : "bg-[#2563eb]/10 text-[#2563eb]"
+          )}>
             <i className="fas fa-layer-group"></i>
           </div>
-          <h2 className="text-[22px] font-bold">SK-OS TITAN ERP</h2>
-          <p className="text-[13px] text-[#64748b]">Enterprise Access Terminal</p>
+          <h2 className="text-[24px] font-bold tracking-tight">SK-OS TITAN ERP</h2>
+          <p className={cn(
+            "text-[13px]",
+            theme === 'dark' ? "text-[#888]" : "text-[#64748b]"
+          )}>Enterprise Access Terminal</p>
         </div>
 
         {/* Error Alert */}
@@ -2546,44 +2676,59 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
 
         <div className="space-y-5">
           <div className="relative">
-            <i className="fas fa-user-circle absolute left-4 top-1/2 -translate-y-1/2 text-[#64748b]"></i>
+            <i className={cn("fas fa-user-circle absolute left-4 top-1/2 -translate-y-1/2", theme === 'dark' ? "text-[#888]" : "text-[#64748b]")}></i>
             <input 
               type="text" 
               placeholder="Staff ID or Name" 
-              className="w-full pl-12 pr-4 py-3.5 bg-white border border-[#e2e8f0] rounded-xl text-[15px] outline-none transition-all focus:border-[#2563eb] focus:ring-4 focus:ring-blue-500/10"
+              className={cn(
+                "w-full pl-12 pr-4 py-3.5 rounded-xl text-[15px] outline-none transition-all border",
+                theme === 'dark' 
+                  ? "bg-white/5 border-white/10 text-white focus:border-[#00f2ff] focus:ring-4 focus:ring-[#00f2ff]/10" 
+                  : "bg-slate-50 border-slate-200 text-slate-900 focus:border-[#2563eb] focus:ring-4 focus:ring-blue-500/10"
+              )}
               value={id}
               onChange={(e) => setId(e.target.value)}
             />
           </div>
 
           <div className="relative">
-            <i className="fas fa-shield-alt absolute left-4 top-1/2 -translate-y-1/2 text-[#64748b]"></i>
+            <i className={cn("fas fa-shield-alt absolute left-4 top-1/2 -translate-y-1/2", theme === 'dark' ? "text-[#888]" : "text-[#64748b]")}></i>
             <input 
               type={showPass ? "text" : "password"} 
               placeholder="Passkey" 
-              className="w-full pl-12 pr-12 py-3.5 bg-white border border-[#e2e8f0] rounded-xl text-[15px] outline-none transition-all focus:border-[#2563eb] focus:ring-4 focus:ring-blue-500/10"
+              className={cn(
+                "w-full pl-12 pr-12 py-3.5 rounded-xl text-[15px] outline-none transition-all border",
+                theme === 'dark' 
+                  ? "bg-white/5 border-white/10 text-white focus:border-[#00f2ff] focus:ring-4 focus:ring-[#00f2ff]/10" 
+                  : "bg-slate-50 border-slate-200 text-slate-900 focus:border-[#2563eb] focus:ring-4 focus:ring-blue-500/10"
+              )}
               value={pass}
               onChange={(e) => setPass(e.target.value)}
             />
             <i 
-              className={cn("fas absolute right-4 top-1/2 -translate-y-1/2 text-[#64748b] cursor-pointer", showPass ? "fa-eye-slash" : "fa-eye")}
+              className={cn("fas absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer", theme === 'dark' ? "text-[#888]" : "text-[#64748b]", showPass ? "fa-eye-slash" : "fa-eye")}
               onClick={() => setShowPass(!showPass)}
             ></i>
           </div>
 
           <button 
             onClick={handleAuth}
-            className="w-full py-3.5 bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-semibold rounded-xl transition-all active:scale-[0.98]"
+            className={cn(
+              "w-full py-4 text-white font-bold rounded-xl transition-all active:scale-[0.98] shadow-lg",
+              theme === 'dark' 
+                ? "bg-[#00f2ff] hover:bg-[#00d8e6] text-black shadow-[#00f2ff]/20" 
+                : "bg-[#2563eb] hover:bg-[#1d4ed8] shadow-blue-500/20"
+            )}
           >
             Authorize & Sign In
           </button>
         </div>
 
-        <div className="mt-[25px] text-center text-[14px] text-[#64748b] flex flex-col gap-2">
-          <div>
-            Forgot Password? <span className="text-[#2563eb] font-semibold cursor-pointer" onClick={() => setIsSupportModalOpen(true)}>Get Help</span>
+        <div className="mt-[25px] text-center text-[13px] flex flex-col gap-2">
+          <div className={theme === 'dark' ? "text-[#888]" : "text-[#64748b]"}>
+            Forgot Password? <span className={cn("font-semibold cursor-pointer", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")} onClick={() => setIsSupportModalOpen(true)}>Get Help</span>
           </div>
-          <div className="text-[12px]">
+          <div className="text-[11px]">
             want to change password? <span className="text-[#ff6600] font-semibold cursor-pointer" onClick={() => setIsChangePassModalOpen(true)}>change password</span>
           </div>
         </div>
@@ -2648,8 +2793,8 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
               className="relative bg-white p-[30px] rounded-[24px] w-[350px] text-center shadow-2xl"
             >
               <i className="fas fa-user-shield text-[40px] text-[#2563eb] mb-[15px]"></i>
-              <h3 className="text-lg font-bold mb-[10px]">Support Terminal</h3>
-              <p className="text-[12px] text-[#64748b] mb-[20px]">
+              <h3 className="text-lg font-bold mb-[10px] text-black">Support Terminal</h3>
+              <p className="text-[12px] text-slate-900 font-medium mb-[20px]">
                 Contact Shahan Khan for assistance or password recovery. 
               </p>
               
@@ -2757,15 +2902,19 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
   );
 }
 
-function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
+function NavItem({ active, onClick, icon, label, theme }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string, theme: string }) {
   return (
     <button 
       onClick={onClick}
       className={cn(
         "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group",
         active 
-          ? "bg-[#0078d4]/10 text-[#00f2ff] shadow-[0_0_15px_rgba(0,242,255,0.1)]" 
-          : "text-[#888] hover:bg-white/5 hover:text-white"
+          ? (theme === 'dark' 
+              ? "bg-[#0078d4]/10 text-[#00f2ff] shadow-[0_0_15px_rgba(0,242,255,0.1)]" 
+              : "bg-[#2563eb]/10 text-[#2563eb] shadow-[0_0_15px_rgba(37,99,235,0.1)]")
+          : (theme === 'dark'
+              ? "text-[#888] hover:bg-white/5 hover:text-white"
+              : "text-[#64748b] hover:bg-gray-100 hover:text-[#0f172a]")
       )}
     >
       <span className={cn("transition-transform duration-200", active && "scale-110")}>{icon}</span>
@@ -2802,7 +2951,7 @@ function StatCard({ icon, label, value, color, onClick, theme }: { icon: React.R
       
       <h4 className="text-[10px] uppercase text-[#888] font-bold tracking-widest mb-2 relative z-10">{label}</h4>
       <h2 className="text-4xl font-['JetBrains_Mono'] font-bold relative z-10" style={{ 
-        color,
+        color: theme === 'dark' ? color : getLightModeColor(color),
         textShadow: theme === 'dark' ? `0 0 15px ${color}44` : `0 0 10px ${color}22`
       }}>{value}</h2>
       
@@ -2852,10 +3001,10 @@ function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: strin
   };
 
   const inputClass = cn(
-    "w-full p-3 rounded-xl outline-none border transition-all duration-200 [&>option]:bg-[#151619]",
+    "w-full p-3 rounded-xl outline-none border transition-all duration-200",
     theme === 'dark' 
-      ? "bg-[#151619] border-white/10 text-white focus:border-[#00f2ff]" 
-      : "bg-gray-50 border-gray-200 text-black focus:border-[#00f2ff]"
+      ? "bg-[#151619] border-white/10 text-white focus:border-[#00f2ff] [&>option]:bg-[#151619]" 
+      : "bg-gray-50 border-gray-200 text-black focus:border-[#00f2ff] [&>option]:bg-white"
   );
 
   return (
@@ -2949,12 +3098,15 @@ function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: strin
       )}
 
       <div className="flex gap-4 pt-4">
-        <button 
-          onClick={() => onSave(formData)}
-          className="flex-1 bg-[#00f2ff] text-white py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity"
-        >
-          SAVE RECORD
-        </button>
+                    <button 
+                      onClick={() => onSave(formData)}
+                      className={cn(
+                        "flex-1 py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity text-white",
+                        theme === 'dark' ? "bg-[#00f2ff] text-black" : "bg-[#2563eb]"
+                      )}
+                    >
+                      SAVE RECORD
+                    </button>
         <button 
           onClick={onCancel}
           className="flex-1 bg-[#ff3f34] text-white py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity"
