@@ -390,6 +390,8 @@ export default function App() {
     };
   }, [currentTime.toDateString()]);
 
+  const todayStr = format(currentTime, 'yyyy-MM-dd');
+
   // Clock
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -633,16 +635,21 @@ export default function App() {
         const curr = new Date(start);
         while (curr <= end) {
           const dateStr = format(curr, 'yyyy-MM-dd');
+          const isFuture = dateStr > todayStr;
           const record = att[dateStr]?.[s.id];
-          if (record) {
-            attendanceInRange.push([
-              format(curr, 'MMM dd, yyyy'),
-              record.status,
-              record.reason || '-'
-            ]);
-            if (record.status === 'Present') presents++;
-            else absents++;
-          }
+          
+          let status = record?.status || (isFuture ? '-' : 'Present');
+          let reason = record?.reason || (record ? '-' : (isFuture ? 'Future Date' : 'Auto-Present'));
+
+          attendanceInRange.push([
+            format(curr, 'MMM dd, yyyy'),
+            status,
+            reason
+          ]);
+          
+          if (status === 'Present') presents++;
+          else if (status === 'Absent') absents++;
+          
           curr.setDate(curr.getDate() + 1);
         }
 
@@ -979,13 +986,15 @@ export default function App() {
                             <select 
                               className={cn(
                                 "p-2 rounded-lg outline-none border text-sm font-bold",
-                                theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-100 border-gray-200"
+                                theme === 'dark' 
+                                  ? "bg-white/5 border-white/10 text-white [&>option]:bg-[#0d0d15] [&>option]:text-white" 
+                                  : "bg-gray-100 border-gray-200 text-black [&>option]:bg-white [&>option]:text-black"
                               )}
                               value={selectedLabStaffId}
                               onChange={(e) => setSelectedLabStaffId(e.target.value)}
                             >
                               {staff.filter(s => s.lab).map((s, i) => (
-                                <option key={s.docId || `${s.id}-${i}`} value={s.id}>{s.n} ({s.lab})</option>
+                                <option key={`lab-opt-${s.docId || s.id || i}-${i}`} value={s.id}>{s.n} ({s.lab})</option>
                               ))}
                               {staff.filter(s => s.lab).length === 0 && <option value="">No Labs Assigned</option>}
                             </select>
@@ -1032,7 +1041,7 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {labSys.filter(l => l.staffId === (isAdmin ? selectedLabStaffId : currentUser.id)).map((l, idx) => (
-                              <div key={l.docId || `${l.id}-${idx}`} className={cn(
+                              <div key={`lab-sys-${l.docId || l.id || idx}-${idx}`} className={cn(
                                 "p-4 rounded-xl border group relative",
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
@@ -1073,7 +1082,7 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {labSw.filter(s => s.staffId === (isAdmin ? selectedLabStaffId : currentUser.id)).map((s, idx) => (
-                              <div key={s.docId || `${s.name}-${idx}`} className={cn(
+                              <div key={`lab-sw-${s.docId || s.name || idx}-${idx}`} className={cn(
                                 "p-4 rounded-xl border group relative",
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
@@ -1111,7 +1120,7 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {labEquip.filter(e => e.staffId === (isAdmin ? selectedLabStaffId : currentUser.id)).map((e, idx) => (
-                              <div key={e.docId || `${e.name}-${idx}`} className={cn(
+                              <div key={`lab-eq-${e.docId || e.name || idx}-${idx}`} className={cn(
                                 "p-4 rounded-xl border group relative",
                                 theme === 'dark' ? "bg-black/20 border-white/5" : "bg-white border-gray-100"
                               )}>
@@ -1173,7 +1182,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredStaff.map((s, i) => (
-                            <tr key={s.docId || `staff-${s.id}-${i}`} className={cn(
+                            <tr key={`staff-row-${s.docId || s.id || i}-${i}`} className={cn(
                               "border-b transition-colors",
                               theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
                             )}>
@@ -1229,7 +1238,7 @@ export default function App() {
                         />
                         <div className="space-y-2">
                           {staff.map((e, i) => (
-                            <div key={e.docId || `att-${e.id}-${i}`} className={cn(
+                            <div key={`att-card-${e.docId || e.id || i}-${i}`} className={cn(
                               "flex items-center justify-between p-3 rounded-lg border",
                               theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
                             )}>
@@ -1239,7 +1248,7 @@ export default function App() {
                                   onClick={() => setAttendance(e.id, 'Present')}
                                   className={cn(
                                     "flex flex-col items-center gap-1 text-[10px] font-bold",
-                                    att[attDate]?.[e.id]?.status === 'Present' ? (theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]") : "text-[#888]"
+                                    (attDate <= todayStr && (!att[attDate]?.[e.id]?.status || att[attDate]?.[e.id]?.status === 'Present')) ? (theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]") : "text-[#888]"
                                   )}
                                 >
                                   <CheckCircle2 size={18} /> P
@@ -1268,9 +1277,9 @@ export default function App() {
                           <p className="text-xs uppercase font-bold mb-1">Your Status Today</p>
                           <p className={cn(
                             "text-lg font-bold",
-                            att[attDate]?.[currentUser.id]?.status === 'Present' ? (theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]") : "text-[#ff3f34]"
+                            (attDate <= todayStr && (!att[attDate]?.[currentUser.id]?.status || att[attDate]?.[currentUser.id]?.status === 'Present')) ? (theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]") : (attDate > todayStr ? "text-[#888]" : "text-[#ff3f34]")
                           )}>
-                            {att[attDate]?.[currentUser.id]?.status || 'Not Marked'}
+                            {att[attDate]?.[currentUser.id]?.status || (attDate > todayStr ? 'Not Yet' : 'Present')}
                           </p>
                           {att[attDate]?.[currentUser.id]?.reason && (
                             <p className="text-[10px] text-[#888] mt-1 italic">Reason: {att[attDate]?.[currentUser.id]?.reason}</p>
@@ -1314,15 +1323,27 @@ export default function App() {
                           {staff.filter(e => isAdmin || e.id === currentUser.id).map((e, i) => {
                             let p = 0;
                             let deductibleAbsents = 0;
-                            Object.entries(att).forEach(([dateStr, day]) => {
-                              if (dateStr >= payrollRange.startStr && dateStr <= payrollRange.endStr) {
-                                if (day[e.id]?.status === 'Present') {
+                            
+                            // Iterate through every day in the payroll range
+                            let current = new Date(payrollRange.start);
+                            while (current <= payrollRange.end) {
+                              const dateStr = format(current, 'yyyy-MM-dd');
+                              const day = att[dateStr];
+                              const isFuture = dateStr > todayStr;
+                              
+                              if (day && day[e.id]) {
+                                if (day[e.id].status === 'Present') {
                                   p++;
-                                } else if (day[e.id]?.status === 'Absent' && day[e.id]?.deduct) {
+                                } else if (day[e.id].status === 'Absent' && day[e.id].deduct) {
                                   deductibleAbsents++;
                                 }
+                              } else if (!isFuture) {
+                                // Default to Present only if day has passed or is today
+                                p++;
                               }
-                            });
+                              current.setDate(current.getDate() + 1);
+                            }
+
                             const isPermanent = e.type === 'Permanent';
                             const baseSalary = parseInt(e.s) || 0;
                             let total = 0;
@@ -1333,7 +1354,7 @@ export default function App() {
                               total = p * baseSalary;
                             }
                             return (
-                              <tr key={e.docId || `${e.id}-${i}`} className={cn(
+                              <tr key={`payroll-row-${e.docId || e.id || i}-${i}`} className={cn(
                                 "border-b transition-colors",
                                 theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
                               )}>
@@ -1404,7 +1425,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredEquip.map((x, i) => (
-                            <tr key={x.docId || `equip-${x.s || i}-${i}`} className={cn(
+                            <tr key={`equip-row-${x.docId || x.s || i}-${i}`} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1447,7 +1468,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredLabSys.map((x, i) => (
-                            <tr key={x.docId || `sys-${x.id || i}-${i}`} className={cn(
+                            <tr key={`sys-row-${x.docId || x.id || i}-${i}`} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1485,7 +1506,7 @@ export default function App() {
                         </thead>
                         <tbody className="text-sm">
                           {filteredLabSw.map((x, i) => (
-                            <tr key={x.docId || `sw-${x.name || i}-${i}`} className={cn(
+                            <tr key={`sw-row-${x.docId || x.name || i}-${i}`} className={cn(
                               "border-b",
                               theme === 'dark' ? "border-white/5" : "border-gray-100"
                             )}>
@@ -1538,7 +1559,7 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredComp.map((x, i) => (
-                          <tr key={x.docId || `comp-${i}`} className={cn(
+                          <tr key={`comp-row-${x.docId || i}-${i}`} className={cn(
                             "border-b",
                             theme === 'dark' ? "border-white/5" : "border-gray-100"
                           )}>
@@ -1598,7 +1619,7 @@ export default function App() {
                       </thead>
                       <tbody className="text-sm">
                         {filteredSched.map((x, i) => (
-                          <tr key={x.docId || `sched-${i}`} className={cn(
+                          <tr key={`sched-row-${x.docId || i}-${i}`} className={cn(
                             "border-b transition-colors",
                             theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
                           )}>
@@ -1688,7 +1709,7 @@ export default function App() {
                       const replyAuthor = note.replyStaffId ? staff.find(s => s.id === note.replyStaffId) : staff.find(s => s.r === 'Admin');
                       
                       return (
-                        <div key={note.docId || `note-${note.id}-${i}`} className={cn(
+                        <div key={`note-card-${note.docId || note.id || i}-${i}`} className={cn(
                           "p-6 rounded-2xl border transition-all relative group",
                           theme === 'dark' ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
                         )}>
@@ -2322,14 +2343,16 @@ export default function App() {
                   <select 
                     className={cn(
                       "w-full p-4 rounded-xl outline-none border transition-all",
-                      theme === 'dark' ? "bg-[#151619] border-white/10 text-white [&>option]:bg-[#151619]" : "bg-gray-50 border-gray-200 text-black [&>option]:bg-white"
+                      theme === 'dark' 
+                        ? "bg-[#151619] border-white/10 text-white [&>option]:bg-[#151619] [&>option]:text-white" 
+                        : "bg-gray-50 border-gray-200 text-black [&>option]:bg-white [&>option]:text-black"
                     )}
                     value={noteTarget}
                     onChange={(e) => setNoteTarget(e.target.value)}
                   >
                     <option value="all">All Staff Members</option>
                     {staff.filter(s => s.r !== 'Admin').map((s, i) => (
-                      <option key={s.docId || `${s.id}-${i}`} value={s.id}>{s.n} ({s.id})</option>
+                      <option key={`target-staff-opt-${s.docId || s.id || i}-${i}`} value={s.id}>{s.n} ({s.id})</option>
                     ))}
                   </select>
                 </div>
@@ -3003,8 +3026,8 @@ function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: strin
   const inputClass = cn(
     "w-full p-3 rounded-xl outline-none border transition-all duration-200",
     theme === 'dark' 
-      ? "bg-[#151619] border-white/10 text-white focus:border-[#00f2ff] [&>option]:bg-[#151619]" 
-      : "bg-gray-50 border-gray-200 text-black focus:border-[#00f2ff] [&>option]:bg-white"
+      ? "bg-[#151619] border-white/10 text-white focus:border-[#00f2ff] [&>option]:bg-[#151619] [&>option]:text-white" 
+      : "bg-gray-50 border-gray-200 text-black focus:border-[#00f2ff] [&>option]:bg-white [&>option]:text-black"
   );
 
   return (
