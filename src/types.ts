@@ -8,12 +8,32 @@ export interface Staff {
   n: string; // Name
   r: string; // Role
   s: string; // Salary
+  bp?: number; // Basic Pay
+  hra?: number; // House Rent Allowance
+  ma?: number; // Medical Allowance
+  ca?: number; // Conveyance Allowance
+  aa?: number; // Adhoc Allowance
+  ot?: number; // Overtime
+  otRate?: number; // Hourly Overtime Rate
   p: string; // Password
   pic?: string; // Profile Picture URL
   lab?: string; // Assigned Lab Name
+  ph?: string; // Phone number for WhatsApp
   type?: 'Daily' | 'Permanent'; // Staff Type
   firstLogin?: boolean; // Whether it is the user's first login
   docId?: string;
+}
+
+export interface OvertimeRecord {
+  id?: string;
+  staffId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  hours: number;
+  purpose: string;
+  amount: number;
+  createdAt: string;
 }
 
 export interface Equipment {

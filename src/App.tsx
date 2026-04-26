@@ -11,6 +11,7 @@ import {
   Package, 
   AlertTriangle, 
   Calendar, 
+  History,
   FileText, 
   LogOut, 
   Search, 
@@ -34,7 +35,8 @@ import {
   Cpu,
   Monitor,
   Code,
-  Lock
+  Lock,
+  FileClock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -54,7 +56,8 @@ import type {
   Schedule, 
   AttendanceRecord, 
   TabType,
-  Note
+  Note,
+  OvertimeRecord
 } from './types';
 
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzmbIoRyz_XkDpv0cC5ica-YvDLfC9sisc31VrbUT6ITTLfLaY1JXP8uBFXc8b_2qpFEA/exec';
@@ -76,9 +79,57 @@ import {
   setDoc,
   query,
   where,
+  orderBy,
   getDoc,
   getDocs
 } from 'firebase/firestore';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 const getLightModeColor = (color: string) => {
   switch (color.toLowerCase()) {
@@ -205,6 +256,10 @@ export default function App() {
       setAtt(attData);
     }, (err) => console.error("Att Listener Error:", err));
 
+    const unsubOT = onSnapshot(collection(db, 'overtime'), (snap) => {
+      setOvertimeRecords(snap.docs.map(doc => ({ ...doc.data() as OvertimeRecord, docId: doc.id })));
+    }, (err) => console.error("OT Listener Error:", err));
+
     return () => {
       unsubStaff();
       unsubEquip();
@@ -215,8 +270,19 @@ export default function App() {
       unsubSched();
       unsubNotes();
       unsubAtt();
+      unsubOT();
     };
   }, [isAuthReady]);
+
+  const allAbsentDates = useMemo(() => {
+    const dates = Object.keys(att);
+    return dates.filter(date => {
+      const dayData = att[date];
+      if (!dayData || Object.keys(dayData).length === 0) return false;
+      const statuses = Object.values(dayData).map((s: any) => s.status);
+      return statuses.length > 0 && statuses.every(s => s === 'Absent');
+    });
+  }, [att]);
 
   const getCroppedImg = async (imageSrc: string, pixelCrop: Area): Promise<string> => {
     const image = new Image();
@@ -362,8 +428,26 @@ export default function App() {
   };
 
   const [attDate, setAttDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [payrollMonth, setPayrollMonth] = useState(() => {
+    const d = new Date();
+    // Shift to next month's payroll view if after the 24th 
+    if (d.getDate() > 24) d.setMonth(d.getMonth() + 1);
+    return format(d, 'yyyy-MM');
+  });
+
+  const [showPayrollPicker, setShowPayrollPicker] = useState(false);
   const [selectedLabStaffId, setSelectedLabStaffId] = useState<string>(() => currentUser?.id || '');
   const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [isOTModalOpen, setIsOTModalOpen] = useState(false);
+  const [editingOTRecord, setEditingOTRecord] = useState<OvertimeRecord | null>(null);
+  const [selectedStaffForOT, setSelectedStaffForOT] = useState<Staff | null>(null);
+  const [otDate, setOTDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [otStart, setOTStart] = useState('17:00');
+  const [otEnd, setOTEnd] = useState('19:00');
+  const [otAmount, setOTAmount] = useState<string>('');
+  const [otPurpose, setOTPurpose] = useState('');
+  const [overtimeRecords, setOvertimeRecords] = useState<OvertimeRecord[]>([]);
+  const [viewingOTHistory, setViewingOTHistory] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [replyText, setReplyText] = useState('');
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -371,24 +455,31 @@ export default function App() {
   const [showNotification, setShowNotification] = useState(false);
   const [notificationCount, setNotificationCount] = useState(0);
 
-  const payrollRange = useMemo(() => {
-    const today = new Date();
-    let startMonth = today.getMonth();
-    let startYear = today.getFullYear();
+  const [showCalendar, setShowCalendar] = useState(false);
 
-    if (today.getDate() < 24) {
-      startMonth -= 1;
-    }
+  const derivedRange = useMemo(() => {
+    const [year, month] = payrollMonth.split('-').map(Number);
+    // Period: 25th of prev month (month-2) to 24th of current month (month-1)
+    const start = new Date(year, month - 2, 25);
+    const end = new Date(year, month - 1, 24);
+    
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
 
-    const start = new Date(startYear, startMonth, 24);
-    const end = new Date(startYear, startMonth + 1, 24);
-    return { 
-      start, 
+    const isCurrent = format(new Date(), 'yyyy-MM') === payrollMonth && new Date().getDate() <= 24;
+
+    return {
+      start,
       end,
       startStr: format(start, 'yyyy-MM-dd'),
-      endStr: format(end, 'yyyy-MM-dd')
+      endStr: format(end, 'yyyy-MM-dd'),
+      monthName: format(new Date(year, month - 1, 1), 'MMMM yyyy'),
+      isHistorical: !isCurrent
     };
-  }, [currentTime.toDateString()]);
+  }, [payrollMonth]);
+
+  // Map derivedRange to local variable name if needed or just replace usages
+  const payrollRange = derivedRange;
 
   const todayStr = format(currentTime, 'yyyy-MM-dd');
 
@@ -425,6 +516,8 @@ export default function App() {
         setConfirmAction({ type: 'duplicate_error', idx: -1 });
         return;
       }
+
+      if (dataWithDefaults.otRate) dataWithDefaults.otRate = parseInt(dataWithDefaults.otRate);
 
       if (dataWithDefaults.docId) {
         // Preserve pic if not provided in formData
@@ -523,12 +616,75 @@ export default function App() {
                          mode === 'lab_sys' ? 'lab_sys' : 
                          mode === 'lab_sw' ? 'lab_sw' : 
                          mode === 'lab_equip' ? 'lab_equip' : 
+                         mode === 'overtime' ? 'overtime' : 
                          mode === 'comp' ? 'complaints' : 'schedules';
     
     await deleteDoc(doc(db, collectionName, docId));
     
     setIsConfirmModalOpen(false);
     setConfirmAction(null);
+  };
+
+  useEffect(() => {
+    const q = query(collection(db, 'overtime'), orderBy('date', 'desc'));
+    return onSnapshot(q, (snapshot) => {
+      setOvertimeRecords(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as OvertimeRecord)));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'overtime'));
+  }, []);
+
+  useEffect(() => {
+    if (otStart && otEnd && selectedStaffForOT) {
+      const start = new Date(`${otDate}T${otStart}`);
+      const end = new Date(`${otDate}T${otEnd}`);
+      const diffMs = end.getTime() - start.getTime();
+      if (diffMs > 0) {
+        const hours = diffMs / (1000 * 60 * 60);
+        const hourlyRate = selectedStaffForOT.otRate || 300; 
+        const calcAmount = Math.round(hours * hourlyRate);
+        setOTAmount(calcAmount.toString());
+      }
+    }
+  }, [otStart, otEnd, otDate, selectedStaffForOT]);
+
+  const saveOvertime = async () => {
+    if (!selectedStaffForOT || !otDate || !otStart || !otEnd || !otPurpose) return;
+
+    const start = new Date(`${otDate}T${otStart}`);
+    const end = new Date(`${otDate}T${otEnd}`);
+    const diffMs = end.getTime() - start.getTime();
+    if (diffMs <= 0) {
+      alert("End time must be after start time");
+      return;
+    }
+    const hours = parseFloat((diffMs / (1000 * 60 * 60)).toFixed(2));
+    const finalAmount = parseInt(otAmount) || 0;
+
+    const record: Partial<OvertimeRecord> = {
+      staffId: selectedStaffForOT.id,
+      date: otDate,
+      startTime: otStart,
+      endTime: otEnd,
+      hours: hours,
+      purpose: otPurpose,
+      amount: finalAmount,
+      createdAt: editingOTRecord?.createdAt || new Date().toISOString()
+    };
+
+    try {
+      if (editingOTRecord?.id) {
+        await setDoc(doc(db, 'overtime', editingOTRecord.id), record);
+      } else {
+        await addDoc(collection(db, 'overtime'), record);
+      }
+      setIsOTModalOpen(false);
+      setEditingOTRecord(null);
+      setOTPurpose('');
+      setOTAmount('');
+      setOTStart('17:00');
+      setOTEnd('19:00');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'overtime');
+    }
   };
 
   const setAttendance = async (id: string, status: 'Present' | 'Absent') => {
@@ -611,29 +767,33 @@ export default function App() {
       doc.save("Inventory_Report.pdf");
     } else if (type === 'payroll-pdf') {
       const doc = new jsPDF();
-      const { start, end } = payrollRange;
       
-      doc.setFontSize(18);
-      doc.text("Monthly Payroll Report", 14, 20);
-      doc.setFontSize(10);
-      doc.text(`Period: ${format(start, 'MMM dd, yyyy')} - ${format(end, 'MMM dd, yyyy')}`, 14, 28);
-      doc.text(`Generated for: ${currentUser.n} (${currentUser.r})`, 14, 34);
-
       const targetStaff = isAdmin ? staff : staff.filter(s => s.id === currentUser.id);
 
       targetStaff.forEach((s, index) => {
         if (index > 0) doc.addPage();
         
+        doc.setFontSize(22);
+        doc.setFont("helvetica", "bold");
+        doc.text(`Monthly Payroll Report - ${payrollRange.monthName}`, 14, 22);
+        
+        doc.setFontSize(10);
+        doc.setFont("helvetica", "normal");
+        doc.text(`Period: ${format(payrollRange.start, 'MMM dd, yyyy')} - ${format(payrollRange.end, 'MMM dd, yyyy')}`, 14, 30);
+        doc.text(`Generated for: ${currentUser.n} (${currentUser.r})`, 14, 36);
+        doc.text(`Report Generation Date: ${format(new Date(), 'PPpp')}`, 14, 42);
+
         doc.setFontSize(14);
-        doc.text(`Staff: ${s.n} (ID: ${s.id})`, 14, 45);
+        doc.setFont("helvetica", "bold");
+        doc.text(`Staff: ${s.n} (ID: ${s.id})`, 14, 55);
         
         // Get attendance for this staff in range
         const attendanceInRange: any[] = [];
         let presents = 0;
         let absents = 0;
         
-        const curr = new Date(start);
-        while (curr <= end) {
+        const curr = new Date(payrollRange.start);
+        while (curr <= payrollRange.end) {
           const dateStr = format(curr, 'yyyy-MM-dd');
           const isFuture = dateStr > todayStr;
           const record = att[dateStr]?.[s.id];
@@ -654,26 +814,93 @@ export default function App() {
         }
 
         autoTable(doc, {
-          startY: 50,
+          startY: 60,
           head: [['Date', 'Status', 'Reason/Remarks']],
           body: attendanceInRange
         });
 
         const finalY = (doc as any).lastAutoTable.finalY || 60;
-        const dailyRate = parseInt(s.s);
-        const totalSalary = presents * dailyRate;
+        const grossRate = parseInt(s.s) || 0;
+        
+        // Dynamic OT from logs for PDF
+        const staffOTRecords = overtimeRecords.filter(r => 
+          r.staffId === s.id && 
+          r.date >= payrollRange.startStr && 
+          r.date <= payrollRange.endStr
+        );
+        const periodOTAmountTotal = staffOTRecords.reduce((sum, r) => sum + r.amount, 0);
+        
+        let netPayable = 0;
+        if (s.type === 'Permanent') {
+          const deductionPerDay = Math.round(grossRate / 30);
+          netPayable = (grossRate - (absents * deductionPerDay)) + periodOTAmountTotal;
+        } else {
+          netPayable = (presents * grossRate) + periodOTAmountTotal;
+        }
+
+        doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
+        doc.text("Salary Breakdown:", 14, finalY + 12);
+        doc.setFont("helvetica", "normal");
+        
+        const breakdownData = [
+          ["Basic Pay", `Rs. ${s.bp || '-'}`],
+          ["House Rent (45%)", `Rs. ${s.hra || '-'}`],
+          ["Medical (15%)", `Rs. ${s.ma || '-'}`],
+          ["Conveyance (10%)", `Rs. ${s.ca || '-'}`],
+          ["Adhoc (5%)", `Rs. ${s.aa || '-'}`],
+          ["Calculated Overtime", `Rs. ${periodOTAmountTotal}`],
+          ["Gross Pay", `Rs. ${grossRate}`]
+        ];
+
+        autoTable(doc, {
+          startY: finalY + 15,
+          head: [['Component', 'Amount']],
+          body: breakdownData,
+          theme: 'grid',
+          styles: { fontSize: 8 },
+          headStyles: { fillColor: [255, 102, 0] },
+          margin: { left: 14, right: 100 } // Keep breakdown side-aligned
+        });
+
+        const breakdownFinalY = (doc as any).lastAutoTable.finalY || finalY + 50;
+
+        // If there are detailed OT logs, list them
+        if (staffOTRecords.length > 0) {
+          doc.setFontSize(9);
+          doc.setFont("helvetica", "bold");
+          doc.text("Overtime Log Details:", 14, breakdownFinalY + 10);
+          
+          autoTable(doc, {
+            startY: breakdownFinalY + 13,
+            head: [['Date', 'Duration', 'Purpose', 'Amt']],
+            body: staffOTRecords.map(r => [r.date, `${r.startTime}-${r.endTime} (${r.hours}h)`, r.purpose, `Rs.${r.amount}`]),
+            theme: 'plain',
+            styles: { fontSize: 7 },
+            headStyles: { fontStyle: 'bold', textColor: [100, 100, 100] }
+          });
+        }
+
+        const finalSectionY = (doc as any).lastAutoTable.finalY || breakdownFinalY + 10;
 
         doc.setFontSize(12);
-        doc.text(`Summary:`, 14, finalY + 15);
-        doc.text(`Total Present Days: ${presents}`, 14, finalY + 22);
-        doc.text(`Total Absent Days: ${absents}`, 14, finalY + 29);
-        doc.text(`Daily Rate: Rs. ${dailyRate}`, 14, finalY + 36);
+        doc.text(`Payment Details:`, 14, finalSectionY + 15);
+        doc.setFontSize(9);
+        doc.text(`Total Present Days: ${presents}`, 14, finalSectionY + 22);
+        doc.text(`Total Absent Days: ${absents}`, 14, finalSectionY + 28);
+        doc.text(`Staff Type: ${s.type || 'Daily'}`, 14, finalSectionY + 34);
+        
+        doc.setFontSize(14);
         doc.setFont("helvetica", "bold");
-        doc.text(`Net Payable Salary: Rs. ${totalSalary}`, 14, finalY + 45);
+        doc.text(`Net Payable: Rs. ${netPayable}`, 14, finalSectionY + 45);
+        
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "italic");
+        doc.text("* Net Payable includes calculated overtime from session logs.", 14, finalSectionY + 52);
         doc.setFont("helvetica", "normal");
       });
 
-      doc.save(`Payroll_Report_${format(new Date(), 'MMM_yyyy')}.pdf`);
+      doc.save(`Payroll_Report_${payrollRange.monthName.replace(' ', '_')}.pdf`);
     }
   };
 
@@ -765,8 +992,43 @@ export default function App() {
     printWindow.document.close();
   };
 
-  const shareWA = (n: string, p: number, t: number) => {
-    window.open(`https://wa.me/?text=*PAYROLL*%0A*Name:* ${n}%0A*Presents:* ${p}%0A*Total:* Rs. ${t}`, '_blank');
+  const shareWA = async (s: Staff, p: number, t: number) => {
+    const doc = new jsPDF();
+    
+    // Header
+    doc.setFontSize(22);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Monthly Payroll Report - ${payrollRange.monthName}`, 14, 22);
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Period: ${format(payrollRange.start, 'MMM dd, yyyy')} - ${format(payrollRange.end, 'MMM dd, yyyy')}`, 14, 30);
+    doc.text(`Generated for: ${currentUser.n} (${currentUser.r})`, 14, 36);
+    doc.text(`Report Generation Date: ${format(new Date(), 'PPpp')}`, 14, 42);
+
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Staff: ${s.n} (ID: ${s.id})`, 14, 55);
+
+    const staffOTRecords = overtimeRecords.filter(r => 
+      r.staffId === s.id && 
+      r.date >= payrollRange.startStr && 
+      r.date <= payrollRange.endStr
+    );
+    const periodOTAmountTotal = staffOTRecords.reduce((sum, r) => sum + r.amount, 0);
+
+    const text = `*SALARY SLIP - ${payrollRange.monthName}*%0A%0A` +
+      `*Name:* ${s.n}%0A` +
+      `*ID:* ${s.id}%0A` +
+      `*Gross Pay:* Rs. ${s.s}%0A` +
+      `*OT Rate:* Rs. ${s.otRate || 300}%0A` +
+      `*OT Total:* Rs. ${periodOTAmountTotal}%0A` +
+      `*Present Days:* ${p}%0A` +
+      `*Net Payable:* Rs. ${t.toLocaleString()}%0A%0A`;
+
+    // Direct WhatsApp open (without phone param to allow choosing contact)
+    const waUrl = `https://wa.me/?text=${text}`;
+    window.open(waUrl, '_blank');
   };
 
   // Filtered Data
@@ -825,7 +1087,6 @@ export default function App() {
           <NavItem active={activeTab === 'salary'} onClick={() => setActiveTab('salary')} icon={<Wallet size={18} />} label="Payroll & Attendance" theme={theme} />
           
           <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Assets & Ops</p>
-          {isAdmin && <NavItem active={activeTab === 'equip'} onClick={() => setActiveTab('equip')} icon={<Package size={18} />} label="Inventory Control" theme={theme} />}
           <NavItem active={activeTab === 'comp'} onClick={() => setActiveTab('comp')} icon={<AlertTriangle size={18} />} label="Complaint Tracker" theme={theme} />
           <NavItem active={activeTab === 'lab'} onClick={() => setActiveTab('lab')} icon={<Monitor size={18} />} label="Lab Inventory" theme={theme} />
           <NavItem active={activeTab === 'sched'} onClick={() => setActiveTab('sched')} icon={<Calendar size={18} />} label="Lab Schedule" theme={theme} />
@@ -927,7 +1188,7 @@ export default function App() {
                       label="Lab Assets" 
                       value={equip.length + labSys.length} 
                       color="#ff6600" 
-                      onClick={isAdmin ? () => setActiveTab('equip') : () => setActiveTab('lab')}
+                      onClick={() => setActiveTab('lab')}
                       theme={theme}
                     />
                     <StatCard 
@@ -1175,7 +1436,8 @@ export default function App() {
                             <th className="pb-4 px-4">Role</th>
                             <th className="pb-4 px-4">Type</th>
                             <th className="pb-4 px-4">Lab</th>
-                            <th className="pb-4 px-4">Base Salary</th>
+                            <th className="pb-4 px-4">Basic Pay</th>
+                            <th className="pb-4 px-4">Gross/Rate</th>
                             <th className="pb-4 px-4">Passkey</th>
                             <th className="pb-4 px-4">Actions</th>
                           </tr>
@@ -1204,11 +1466,25 @@ export default function App() {
                                 <span className="text-[#888] text-[10px] italic">Not Assigned</span>
                               )}
                             </td>
-                            <td className="py-4 px-4">Rs. {s.s}</td>
+                            <td className="py-4 px-4 text-[#888]">Rs. {s.bp || '-'}</td>
+                            <td className="py-4 px-4 font-bold tracking-tight">Rs. {s.s}</td>
                             <td className="py-4 px-4"><code className="text-[#888]">****</code></td>
                             <td className="py-4 px-4 flex gap-2">
-                              <button onClick={() => openEditModal('staff', s)} className={cn("p-2 rounded hover:opacity-80", theme === 'dark' ? "bg-[#ffcc00] text-black" : "bg-[#a16207] text-white")}><Edit2 size={14} /></button>
-                              <button onClick={() => handleDelete('staff', s)} className="p-2 bg-[#ff3f34] text-white rounded hover:opacity-80"><Trash2 size={14} /></button>
+                               <button 
+                                 onClick={() => {
+                                   setSelectedStaffForOT(s);
+                                   setIsOTModalOpen(true);
+                                 }}
+                                 className={cn(
+                                   "p-2 rounded hover:opacity-80 transition-all",
+                                   theme === 'dark' ? "bg-white/10 text-white" : "bg-gray-200 text-black shadow-sm"
+                                 )}
+                                 title="Add Overtime Log"
+                               >
+                                 <History size={14} />
+                               </button>
+                               <button onClick={() => openEditModal('staff', s)} className={cn("p-2 rounded hover:opacity-80", theme === 'dark' ? "bg-[#ffcc00] text-black" : "bg-[#a16207] text-white")}><Edit2 size={14} /></button>
+                               <button onClick={() => handleDelete('staff', s)} className="p-2 bg-[#ff3f34] text-white rounded hover:opacity-80"><Trash2 size={14} /></button>
                             </td>
                           </tr>
                         ))}
@@ -1227,15 +1503,87 @@ export default function App() {
                     <h3 className="text-lg font-bold mb-4">Daily Attendance</h3>
                     {isAdmin ? (
                       <>
-                        <input 
-                          type="date" 
-                          className={cn(
-                            "w-full p-3 rounded-lg mb-6 outline-none",
-                            theme === 'dark' ? "bg-white/5 border border-white/5" : "bg-gray-100"
-                          )}
-                          value={attDate}
-                          onChange={(e) => setAttDate(e.target.value)}
-                        />
+                        <div className="relative mb-6">
+                           <button 
+                             onClick={() => setShowCalendar(!showCalendar)}
+                             className={cn(
+                               "w-full p-3 rounded-xl flex items-center justify-between border transition-all",
+                               theme === 'dark' ? "bg-white/5 border-white/5 hover:bg-white/10" : "bg-gray-100 border-gray-100 hover:bg-gray-200"
+                             )}
+                           >
+                             <div className="flex items-center gap-3">
+                               <Calendar size={18} className="text-[#00f2ff]" />
+                               <span className="font-bold">{format(new Date(attDate), 'MMMM dd, yyyy')}</span>
+                             </div>
+                             {allAbsentDates.includes(attDate) && (
+                               <span className="text-[10px] bg-red-500 text-white px-2 py-0.5 rounded-full font-black animate-pulse">ALL ABSENT</span>
+                             )}
+                           </button>
+
+                           <AnimatePresence>
+                             {showCalendar && (
+                               <motion.div 
+                                 initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                                 animate={{ opacity: 1, y: 0, scale: 1 }}
+                                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                                 className={cn(
+                                   "absolute top-full left-0 right-0 z-[100] mt-2 p-4 rounded-2xl border shadow-2xl overflow-hidden",
+                                   theme === 'dark' ? "bg-[#0d0d15] border-white/10" : "bg-white border-gray-200"
+                                 )}
+                               >
+                                 <div className="flex justify-between items-center mb-4">
+                                   <button onClick={() => {
+                                     const d = new Date(attDate);
+                                     d.setMonth(d.getMonth() - 1);
+                                     setAttDate(format(d, 'yyyy-MM-dd'));
+                                   }} className="p-2 hover:bg-white/5 rounded-lg"><RefreshCw size={14} className="-rotate-90" /></button>
+                                   <h4 className="font-bold uppercase tracking-widest text-xs text-[#00f2ff]">{format(new Date(attDate), 'MMMM yyyy')}</h4>
+                                   <button onClick={() => {
+                                     const d = new Date(attDate);
+                                     d.setMonth(d.getMonth() + 1);
+                                     setAttDate(format(d, 'yyyy-MM-dd'));
+                                   }} className="p-2 hover:bg-white/5 rounded-lg"><RefreshCw size={14} className="rotate-90" /></button>
+                                 </div>
+                                 <div className="grid grid-cols-7 gap-1 text-center mb-2">
+                                   {['S','M','T','W','T','F','S'].map(d => <div key={d} className="text-[8px] font-black text-[#888]">{d}</div>)}
+                                 </div>
+                                 <div className="grid grid-cols-7 gap-1">
+                                    {(() => {
+                                      const d = new Date(attDate);
+                                      const start = new Date(d.getFullYear(), d.getMonth(), 1);
+                                      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+                                      const startDay = start.getDay();
+                                      const days = [];
+                                      for(let i=0; i<startDay; i++) days.push(null);
+                                      for(let i=1; i<=end.getDate(); i++) days.push(i);
+                                      
+                                      return days.map((day, idx) => {
+                                        if(!day) return <div key={`empty-${idx}`} />;
+                                        const dateStr = format(new Date(d.getFullYear(), d.getMonth(), day), 'yyyy-MM-dd');
+                                        const isAllAbsent = allAbsentDates.includes(dateStr);
+                                        const isSelected = attDate === dateStr;
+                                        return (
+                                          <button
+                                            key={dateStr}
+                                            onClick={() => { setAttDate(dateStr); setShowCalendar(false); }}
+                                            className={cn(
+                                              "aspect-square flex items-center justify-center text-xs rounded-lg transition-all relative font-bold",
+                                              isSelected ? "bg-[#00f2ff] text-black" : (isAllAbsent ? "bg-red-500/20 text-red-500 border border-red-500/30" : "hover:bg-white/5"),
+                                              !isSelected && !isAllAbsent && theme === 'light' && "hover:bg-gray-100"
+                                            )}
+                                          >
+                                            {day}
+                                            {isAllAbsent && <div className="absolute top-1 right-1 w-1 h-1 bg-red-500 rounded-full" />}
+                                          </button>
+                                        );
+                                      });
+                                    })()}
+                                 </div>
+                               </motion.div>
+                             )}
+                           </AnimatePresence>
+                        </div>
+
                         <div className="space-y-2">
                           {staff.map((e, i) => (
                             <div key={`att-card-${e.docId || e.id || i}-${i}`} className={cn(
@@ -1293,12 +1641,64 @@ export default function App() {
                     "lg:col-span-2 p-8 rounded-2xl border",
                     theme === 'dark' ? "bg-[#0d0d15] border-white/5" : "bg-white border-gray-200"
                   )}>
-                    <div className="flex justify-between items-center mb-6">
-                      <div>
-                        <h3 className="text-xl font-bold">Monthly Payroll</h3>
-                        <p className="text-[10px] text-[#888] uppercase tracking-wider">
-                          Period: {format(payrollRange.start, 'MMM dd')} - {format(payrollRange.end, 'MMM dd')}
-                        </p>
+                     <div className="flex justify-between items-center mb-6">
+                      <div className="flex items-center gap-4">
+                        <div>
+                          <h3 className="text-xl font-bold">Monthly Payroll</h3>
+                          <p className="text-[10px] text-[#888] uppercase tracking-wider">
+                            Period: {format(payrollRange.start, 'MMM dd')} - {format(payrollRange.end, 'MMM dd')}
+                            {payrollRange.isHistorical && <span className="ml-2 text-[#ff6600] text-[8px] font-black underline">(HISTORY MODE)</span>}
+                          </p>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => setViewingOTHistory(!viewingOTHistory)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all",
+                              viewingOTHistory ? "bg-[#ff6600] text-white" : (theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-white border-gray-200")
+                            )}
+                          >
+                            <FileClock size={14} /> OT HISTORY
+                          </button>
+
+                          {!showPayrollPicker ? (
+                            <button 
+                              onClick={() => setShowPayrollPicker(true)}
+                              className={cn(
+                                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all",
+                                theme === 'dark' ? "bg-white/5 border-white/10 text-white hover:bg-[#ff6600]/20" : "bg-white border-gray-200 hover:bg-gray-50"
+                              )}
+                            >
+                              <History size={14} /> CHECK OLD SALARY
+                            </button>
+                          ) : (
+                            <motion.div 
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              className="flex items-center gap-2 p-1 rounded-xl bg-black/10 border border-white/5"
+                            >
+                              <input 
+                                type="month" 
+                                value={payrollMonth} 
+                                onChange={(e) => setPayrollMonth(e.target.value)}
+                                className={cn(
+                                  "p-2 rounded-lg border text-[10px] font-bold outline-none uppercase",
+                                  theme === 'dark' ? "bg-white/10 border-white/10 text-white" : "bg-gray-50 border-gray-200"
+                                )}
+                              />
+                              <button 
+                                onClick={() => {
+                                  setPayrollMonth(format(currentTime, 'yyyy-MM'));
+                                  setShowPayrollPicker(false);
+                                }}
+                                className="p-2 bg-[#ff3f34] text-white rounded-lg hover:opacity-80 transition-all"
+                              >
+                                <X size={14} />
+                              </button>
+                            </motion.div>
+                          )}
+                        </div>
                       </div>
                       <div className="flex gap-2">
                         <button onClick={() => exportData('payroll-pdf')} className="flex items-center gap-2 bg-[#ff6600] text-white px-4 py-2 rounded-lg text-xs font-bold"><Download size={14} /> PDF</button>
@@ -1306,84 +1706,200 @@ export default function App() {
                       </div>
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left">
-                        <thead>
-                          <tr className={cn(
-                            "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
-                            theme === 'dark' ? "border-white/5" : "border-gray-100"
-                          )}>
-                            <th className="pb-4 px-4">Staff Name</th>
-                            <th className="pb-4 px-4">Presents</th>
-                            <th className="pb-4 px-4">Base</th>
-                            <th className="pb-4 px-4">Net Salary</th>
-                            <th className="pb-4 px-4">Share</th>
-                          </tr>
-                        </thead>
-                        <tbody className="text-sm">
-                          {staff.filter(e => isAdmin || e.id === currentUser.id).map((e, i) => {
-                            let p = 0;
-                            let deductibleAbsents = 0;
-                            
-                            // Iterate through every day in the payroll range
-                            let current = new Date(payrollRange.start);
-                            while (current <= payrollRange.end) {
-                              const dateStr = format(current, 'yyyy-MM-dd');
-                              const day = att[dateStr];
-                              const isFuture = dateStr > todayStr;
-                              
-                              if (day && day[e.id]) {
-                                if (day[e.id].status === 'Present') {
-                                  p++;
-                                } else if (day[e.id].status === 'Absent' && day[e.id].deduct) {
-                                  deductibleAbsents++;
-                                }
-                              } else if (!isFuture) {
-                                // Default to Present only if day has passed or is today
-                                p++;
-                              }
-                              current.setDate(current.getDate() + 1);
-                            }
-
-                            const isPermanent = e.type === 'Permanent';
-                            const baseSalary = parseInt(e.s) || 0;
-                            let total = 0;
-                            if (isPermanent) {
-                              const dailyRate = Math.round(baseSalary / 30);
-                              total = baseSalary - (deductibleAbsents * dailyRate);
-                            } else {
-                              total = p * baseSalary;
-                            }
-                            return (
-                              <tr key={`payroll-row-${e.docId || e.id || i}-${i}`} className={cn(
-                                "border-b transition-colors",
-                                theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
-                              )}>
-                                <td className="py-4 px-4 font-semibold">
-                                  {e.n}
-                                  <span className="ml-2 text-[8px] opacity-50 uppercase tracking-tighter">({e.type || 'Daily'})</span>
-                                </td>
-                                <td className="py-4 px-4">
-                                  {isPermanent ? (
-                                    <div className="flex flex-col">
-                                      <span>Monthly</span>
-                                      {deductibleAbsents > 0 && (
-                                        <span className="text-[10px] text-[#ff3f34]">-{deductibleAbsents} Deductions</span>
-                                      )}
-                                    </div>
-                                  ) : `${p} Days`}
-                                </td>
-                                <td className="py-4 px-4">Rs. {e.s}</td>
-                                <td className={cn("py-4 px-4 font-bold", theme === 'dark' ? "text-[#00ff88]" : "text-[#008a4e]")}>Rs. {total}</td>
-                                <td className="py-4 px-4">
-                                  <button onClick={() => shareWA(e.n, p, total)} className="p-2 bg-[#25D366] text-white rounded hover:opacity-80">
-                                    <i className="fab fa-whatsapp text-lg"></i>
-                                  </button>
-                                </td>
+                      {viewingOTHistory ? (
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className={cn(
+                              "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
+                              theme === 'dark' ? "border-white/5" : "border-gray-100"
+                            )}>
+                              <th className="pb-4 px-4">Date</th>
+                              <th className="pb-4 px-4">Staff</th>
+                              <th className="pb-4 px-4">Details</th>
+                              <th className="pb-4 px-4">Purpose</th>
+                              <th className="pb-4 px-4 text-right">Amount</th>
+                              <th className="pb-4 px-4 text-center">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-sm">
+                            {overtimeRecords
+                              .filter(r => (isAdmin || r.staffId === currentUser.id) && (r.date >= payrollRange.startStr && r.date <= payrollRange.endStr))
+                              .map((r, i) => {
+                                const s = staff.find(st => st.id === r.staffId);
+                                return (
+                                          <tr key={`ot-history-${r.docId || `row-${i}`}`} className={cn(
+                                            "border-b transition-colors",
+                                            theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
+                                          )}>
+                                            <td className="py-4 px-4 font-mono text-xs">{r.date}</td>
+                                            <td className="py-4 px-4 font-bold">{s?.n || 'Unknown'}</td>
+                                            <td className="py-4 px-4">
+                                              <div className="flex flex-col">
+                                                <span className="text-[10px] text-[#888]">{r.startTime} - {r.endTime}</span>
+                                                <span className="text-[9px] font-black uppercase text-[#00f2ff]">{r.hours} Hours</span>
+                                              </div>
+                                            </td>
+                                            <td className="py-4 px-4 text-xs italic">{r.purpose}</td>
+                                            <td className="py-4 px-4 text-right font-black">Rs. {r.amount}</td>
+                                            <td className="py-4 px-4 text-center">
+                                              <div className="flex justify-center gap-2">
+                                                <button 
+                                                  onClick={() => {
+                                                    const s = staff.find(st => st.id === r.staffId);
+                                                    if (s) {
+                                                      setSelectedStaffForOT(s);
+                                                      setEditingOTRecord(r);
+                                                      setOTDate(r.date);
+                                                      setOTStart(r.startTime);
+                                                      setOTEnd(r.endTime);
+                                                      setOTPurpose(r.purpose);
+                                                      setOTAmount(r.amount.toString());
+                                                      setIsOTModalOpen(true);
+                                                    }
+                                                  }}
+                                                  className="p-1 px-2 bg-[#00f2ff]/10 text-[#00f2ff] border border-[#00f2ff]/20 rounded text-[10px] hover:bg-[#00f2ff] hover:text-black transition-all font-bold"
+                                                >
+                                                  EDIT
+                                                </button>
+                                                {(isAdmin || r.staffId === currentUser.id) && (
+                                                  <button 
+                                                    onClick={() => handleDelete('overtime', r)}
+                                                    className="p-1 px-2 bg-[#ff3f34]/10 text-[#ff3f34] border border-[#ff3f34]/20 rounded text-[10px] hover:bg-[#ff3f34] hover:text-white transition-all font-bold"
+                                                  >
+                                                    DELETE
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </td>
+                                          </tr>
+                                );
+                              })}
+                            {overtimeRecords.filter(r => (isAdmin || r.staffId === currentUser.id) && (r.date >= payrollRange.startStr && r.date <= payrollRange.endStr)).length === 0 && (
+                              <tr>
+                                <td colSpan={isAdmin ? 6 : 5} className="py-12 text-center text-[#888] italic">No overtime records found.</td>
                               </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                            )}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className={cn(
+                              "text-[#ff6600] text-[10px] uppercase tracking-wider border-b",
+                              theme === 'dark' ? "border-white/5" : "border-gray-100"
+                            )}>
+                              <th className="pb-4 px-4">Staff Details</th>
+                              <th className="pb-4 px-4">Attendance</th>
+                              <th className="pb-4 px-4 text-center">Basic Pay</th>
+                              <th className="pb-4 px-4 text-center">Gross Pay</th>
+                              <th className="pb-4 px-4 text-right">Net Payable</th>
+                              <th className="pb-4 px-4">Share</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-sm">
+                            {staff.filter(e => isAdmin || e.id === currentUser.id).map((e, idx) => {
+                              let p = 0;
+                              let deductibleAbsents = 0;
+                              
+                              // Iterate through every day in the payroll range
+                              let current = new Date(payrollRange.start);
+                              while (current <= payrollRange.end) {
+                                const dateStr = format(current, 'yyyy-MM-dd');
+                                const day = att[dateStr];
+                                const isFuture = dateStr > todayStr;
+                                
+                                if (day && day[e.id]) {
+                                  if (day[e.id].status === 'Present') {
+                                    p++;
+                                  } else if (day[e.id].status === 'Absent' && day[e.id].deduct) {
+                                    deductibleAbsents++;
+                                  }
+                                } else if (!isFuture) {
+                                  // Default to Present only if day has passed or is today
+                                  p++;
+                                }
+                                current.setDate(current.getDate() + 1);
+                              }
+
+                              const isPermanent = e.type === 'Permanent';
+                              const grossRate = parseInt(e.s) || 0;
+                              
+                              // Calc OT for this period
+                              const staffOTRecords = overtimeRecords.filter(r => 
+                                r.staffId === e.id && 
+                                r.date >= payrollRange.startStr && 
+                                r.date <= payrollRange.endStr
+                              );
+                              const periodOTAmount = staffOTRecords.reduce((sum, r) => sum + r.amount, 0);
+                              
+                              let total = 0;
+                              if (isPermanent) {
+                                const deductionPerDay = Math.round(grossRate / 30);
+                                total = (grossRate - (deductibleAbsents * deductionPerDay)) + periodOTAmount;
+                              } else {
+                                total = (p * grossRate) + periodOTAmount;
+                              }
+                              return (
+                                <tr key={`payroll-row-${e.docId || `staff-${e.id}`}-${idx}`} className={cn(
+                                  "border-b transition-colors group",
+                                  theme === 'dark' ? "border-white/5 hover:bg-white/5" : "border-gray-50 hover:bg-gray-50"
+                                )}>
+                                  <td className="py-4 px-4">
+                                    <div className="flex flex-col">
+                                      <span className="font-bold">{e.n}</span>
+                                      <span className="text-[9px] uppercase font-black text-[#ff6600] tracking-tighter opacity-70">
+                                        {e.r} • {e.type || 'Daily'}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="py-4 px-4">
+                                    {isPermanent ? (
+                                      <div className="flex flex-col">
+                                        <span className="text-xs font-medium">Monthly Plan</span>
+                                        {deductibleAbsents > 0 && (
+                                          <span className="text-[10px] text-[#ff3f34] flex items-center gap-1 font-bold">
+                                            <AlertCircle size={10} /> -{deductibleAbsents} Absents
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="flex flex-col">
+                                        <span className="text-xs font-bold">{p} Days</span>
+                                        <span className="text-[9px] text-[#888]">Present in period</span>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="py-4 px-4 text-center text-[#888] font-mono text-xs">
+                                    Rs. {e.bp || '-'}
+                                  </td>
+                                  <td className="py-4 px-4 text-center">
+                                    <div className="flex flex-col items-center group-hover:scale-110 transition-transform">
+                                      <span className="font-bold">Rs. {e.s}</span>
+                                      {periodOTAmount > 0 && <span className="text-[8px] text-[#00ff88] font-black tracking-tighter cursor-help" title={`Calculated OT: ${periodOTAmount}`}>+Rs.{periodOTAmount} (OT)</span>}
+                                    </div>
+                                  </td>
+                                  <td className="py-4 px-4 text-right">
+                                    <div className="flex flex-col items-end">
+                                      <span className={cn(
+                                        "text-lg font-black tracking-tighter",
+                                        theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]"
+                                      )}>
+                                        Rs. {total.toLocaleString()}
+                                      </span>
+                                      <span className="text-[9px] text-[#888] uppercase font-bold">Net Payable</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-4 px-4">
+                                    <button onClick={() => shareWA(e, p, total)} className="p-2 bg-[#25D366] text-white rounded-lg hover:shadow-lg transition-all hover:-translate-y-1">
+                                      <Download size={14} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1957,7 +2473,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
               className={cn(
-                "relative w-full max-w-lg p-8 rounded-3xl border shadow-2xl",
+                "relative w-full max-w-lg p-8 rounded-3xl border shadow-2xl max-h-[95vh] overflow-y-auto",
                 theme === 'dark' ? "bg-[#0d0d15] border-[#00f2ff]/30" : "bg-white border-gray-200"
               )}
             >
@@ -1990,7 +2506,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               className={cn(
-                "relative w-full max-w-sm p-8 rounded-3xl border shadow-2xl text-center",
+                "relative w-full max-w-sm p-8 rounded-3xl border shadow-2xl text-center max-h-[95vh] overflow-y-auto",
                 theme === 'dark' ? "bg-[#0d0d15] border-white/10" : "bg-white border-gray-200"
               )}
             >
@@ -2054,7 +2570,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               className={cn(
-                "relative w-full max-w-sm p-8 rounded-3xl border shadow-2xl",
+                "relative w-full max-w-sm p-8 rounded-3xl border shadow-2xl max-h-[95vh] overflow-y-auto",
                 theme === 'dark' ? "bg-[#0d0d15] border-white/10" : "bg-white border-gray-200"
               )}
             >
@@ -2100,6 +2616,122 @@ export default function App() {
                 >
                   SAVE ABSENCE
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {isOTModalOpen && (
+          <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }}
+              onClick={() => setIsOTModalOpen(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} 
+              animate={{ scale: 1, opacity: 1 }} 
+              exit={{ scale: 0.9, opacity: 0 }}
+              className={cn(
+                "relative w-full max-w-md p-8 rounded-3xl z-[3001] border shadow-2xl max-h-[95vh] overflow-y-auto",
+                theme === 'dark' ? "bg-[#0d0d15] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <h3 className="text-xl font-bold mb-1">{editingOTRecord ? 'Edit Overtime Log' : 'Add Overtime Log'}</h3>
+              <p className="text-[10px] text-[#ff6600] font-black uppercase tracking-widest mb-6">
+                Staff: {selectedStaffForOT?.n}
+              </p>
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase font-bold text-[#888] ml-1">Date</label>
+                  <input 
+                    type="date" 
+                    className={cn(
+                      "w-full p-3 rounded-xl border outline-none font-bold",
+                      theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-50 border-gray-200 text-black"
+                    )}
+                    value={otDate}
+                    onChange={(e) => setOTDate(e.target.value)}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase font-bold text-[#888] ml-1">Start Time</label>
+                    <input 
+                      type="time" 
+                      className={cn(
+                        "w-full p-3 rounded-xl border outline-none font-bold",
+                        theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-50 border-gray-200 text-black"
+                      )}
+                      value={otStart}
+                      onChange={(e) => setOTStart(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase font-bold text-[#888] ml-1">End Time</label>
+                    <input 
+                      type="time" 
+                      className={cn(
+                        "w-full p-3 rounded-xl border outline-none font-bold",
+                        theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-50 border-gray-200 text-black"
+                      )}
+                      value={otEnd}
+                      onChange={(e) => setOTEnd(e.target.value)}
+                    />
+                  </div>
+                </div>
+                
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase font-bold text-[#888] ml-1">Amount (Calculated/Manual)</label>
+                  <input 
+                    type="number" 
+                    className={cn(
+                      "w-full p-3 rounded-xl border outline-none font-bold",
+                      theme === 'dark' ? "bg-white/5 border-white/10 text-[#00f2ff]" : "bg-gray-50 border-gray-200 text-[#2563eb]"
+                    )}
+                    value={otAmount}
+                    onChange={(e) => setOTAmount(e.target.value)}
+                    placeholder="Enter Amount"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase font-bold text-[#888] ml-1">Purpose / Reason</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. Server Maintenance, Event Setup"
+                    className={cn(
+                      "w-full p-3 rounded-xl border outline-none font-bold",
+                      theme === 'dark' ? "bg-white/5 border-white/10 text-white" : "bg-gray-50 border-gray-200 text-black"
+                    )}
+                    value={otPurpose}
+                    onChange={(e) => setOTPurpose(e.target.value)}
+                  />
+                </div>
+
+                <div className="pt-4 flex gap-3">
+                  <button 
+                    onClick={() => saveOvertime()}
+                    className="flex-1 py-4 bg-[#00f2ff] text-black font-black uppercase text-xs rounded-2xl hover:shadow-[0_0_20px_rgba(0,242,255,0.4)] transition-all"
+                  >
+                    {editingOTRecord ? 'Update Log' : 'Save Log'}
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setIsOTModalOpen(false);
+                      setEditingOTRecord(null);
+                    }}
+                    className={cn(
+                      "px-6 py-4 rounded-2xl font-black uppercase text-xs",
+                      theme === 'dark' ? "bg-white/5 text-white" : "bg-gray-100 text-black"
+                    )}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -2315,7 +2947,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               className={cn(
-                "relative w-full max-w-md p-8 rounded-3xl border shadow-2xl",
+                "relative w-full max-w-md p-8 rounded-3xl border shadow-2xl max-h-[95vh] overflow-y-auto",
                 theme === 'dark' ? "bg-[#0d0d15] border-white/10" : "bg-white border-gray-200"
               )}
             >
@@ -3019,6 +3651,37 @@ function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: strin
     return data;
   });
 
+  useEffect(() => {
+    if (mode === 'staff' && formData.bp) {
+      const basic = parseFloat(formData.bp);
+      if (!isNaN(basic)) {
+        const hra = Math.round(basic * 0.45);
+        const ma = Math.round(basic * 0.15);
+        const ca = Math.round(basic * 0.10);
+        const aa = Math.round(basic * 0.05);
+        const standardGross = basic + hra + ma + ca + aa;
+        
+        // Only update if they differ
+        if (
+          formData.hra !== hra.toString() || 
+          formData.ma !== ma.toString() || 
+          formData.ca !== ca.toString() || 
+          formData.aa !== aa.toString() ||
+          formData.s !== standardGross.toString()
+        ) {
+          setFormData(prev => ({
+            ...prev,
+            hra: hra.toString(),
+            ma: ma.toString(),
+            ca: ca.toString(),
+            aa: aa.toString(),
+            s: standardGross.toString()
+          }));
+        }
+      }
+    }
+  }, [formData.bp, mode]);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
@@ -3034,18 +3697,70 @@ function ModalForm({ mode, initialData, onSave, onCancel, theme }: { mode: strin
     <div className="space-y-4">
       {mode === 'staff' && (
         <>
-          <input name="id" placeholder="Staff ID" className={inputClass} value={formData.id || ''} onChange={handleChange} />
-          <input name="n" placeholder="Full Name" className={inputClass} value={formData.n || ''} onChange={handleChange} />
-          <select name="r" className={inputClass} value={formData.r || 'Staff'} onChange={handleChange}>
-            <option value="Admin">Admin</option>
-            <option value="Staff">Staff</option>
-          </select>
-          <select name="type" className={inputClass} value={formData.type || 'Daily'} onChange={handleChange}>
-            <option value="Daily">Daily Wage</option>
-            <option value="Permanent">Permanent</option>
-          </select>
+          <div className="grid grid-cols-2 gap-4">
+            <input name="id" placeholder="Staff ID" className={inputClass} value={formData.id || ''} onChange={handleChange} />
+            <input name="n" placeholder="Full Name" className={inputClass} value={formData.n || ''} onChange={handleChange} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <select name="r" className={inputClass} value={formData.r || 'Staff'} onChange={handleChange}>
+              <option value="Admin">Admin</option>
+              <option value="Staff">Staff</option>
+            </select>
+            <select name="type" className={inputClass} value={formData.type || 'Daily'} onChange={handleChange}>
+              <option value="Daily">Daily Wage</option>
+              <option value="Permanent">Permanent</option>
+            </select>
+          </div>
           <input name="lab" placeholder="Assigned Lab Name (Optional)" className={inputClass} value={formData.lab || ''} onChange={handleChange} />
-          <input name="s" type="number" placeholder="Base Salary (Daily or Monthly)" className={inputClass} value={formData.s || ''} onChange={handleChange} />
+          <input name="ph" placeholder="WhatsApp Number (e.g. 0317...)" className={inputClass} value={formData.ph || ''} onChange={handleChange} />
+          
+          {formData.type === 'Permanent' && (
+            <div className="p-4 rounded-xl border border-white/5 bg-black/20 space-y-3">
+              <p className="text-[10px] font-bold text-[#ff6600] uppercase tracking-widest">Salary Components (Calculated Automatically)</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">Basic Pay</label>
+                  <input name="bp" type="number" placeholder="Basic Pay" className={inputClass} value={formData.bp || ''} onChange={handleChange} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">OT Hourly Rate</label>
+                  <input name="otRate" type="number" placeholder="OT Rate (default 300)" className={inputClass} value={formData.otRate || ''} onChange={handleChange} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">House Rent (45%)</label>
+                  <input name="hra" type="number" placeholder="House Rent" className={cn(inputClass, "opacity-50")} value={formData.hra || ''} readOnly />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">Medical (15%)</label>
+                  <input name="ma" type="number" placeholder="Medical" className={cn(inputClass, "opacity-50")} value={formData.ma || ''} readOnly />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">Conveyance (10%)</label>
+                  <input name="ca" type="number" placeholder="Conveyance" className={cn(inputClass, "opacity-50")} value={formData.ca || ''} readOnly />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">Adhoc (5%)</label>
+                  <input name="aa" type="number" placeholder="Adhoc" className={cn(inputClass, "opacity-50")} value={formData.aa || ''} readOnly />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] uppercase text-[#888] ml-2">Gross Pay (Total)</label>
+                  <input name="s" type="number" placeholder="Total" className={cn(inputClass, "border-[#00f2ff] bg-[#00f2ff]/5")} value={formData.s || ''} onChange={handleChange} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/5">
+              </div>
+            </div>
+          )}
+
+          {formData.r === 'Staff' && formData.type !== 'Permanent' && (
+             <div className="space-y-3">
+               <div className="grid grid-cols-2 gap-3">
+                 <input name="s" type="number" placeholder="Daily Base Salary" className={inputClass} value={formData.s || ''} onChange={handleChange} />
+                 <input name="otRate" type="number" placeholder="OT Hourly Rate" className={inputClass} value={formData.otRate || ''} onChange={handleChange} />
+               </div>
+             </div>
+          )}
+
           <input name="p" placeholder="Passkey" className={inputClass} value={formData.p || ''} onChange={handleChange} />
         </>
       )}
