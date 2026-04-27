@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   LayoutDashboard, 
   Users, 
@@ -36,9 +36,17 @@ import {
   Monitor,
   Code,
   Lock,
-  FileClock
+  FileClock,
+  Brain,
+  Calculator as CalcIcon,
+  Send,
+  Loader2,
+  Trash,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI } from "@google/genai";
 import { format } from 'date-fns';
 import Cropper from 'react-easy-crop';
 import type { Point, Area } from 'react-easy-crop';
@@ -61,6 +69,8 @@ import type {
 } from './types';
 
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzmbIoRyz_XkDpv0cC5ica-YvDLfC9sisc31VrbUT6ITTLfLaY1JXP8uBFXc8b_2qpFEA/exec';
+
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 import { db, auth } from './firebase';
 import { 
@@ -170,6 +180,16 @@ export default function App() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
+  const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+  const [isAIChatOpen, setIsAIChatOpen] = useState(false);
+  const [aiChatMessages, setAIChatMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([]);
+  const [aiLoading, setAILoading] = useState(false);
+  const [aiInput, setAIInput] = useState('');
+  const [aiHistory, setAIHistory] = useState<{ id: string; date: string; messages: { role: 'user' | 'model'; text: string }[] }[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [showAIHistory, setShowAIHistory] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+
   const [staff, setStaff] = useState<Staff[]>([]);
   const [equip, setEquip] = useState<Equipment[]>([]);
   const [labSys, setLabSys] = useState<LabSys[]>([]);
@@ -273,6 +293,67 @@ export default function App() {
       unsubOT();
     };
   }, [isAuthReady]);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom of chat
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [aiChatMessages, aiLoading]);
+
+  // Load AI history from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('titan_ai_history');
+    if (saved) {
+      try {
+        setAIHistory(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to load AI history", e);
+      }
+    }
+  }, []);
+
+  // Keyboard support for calculator
+  useEffect(() => {
+    if (!isCalculatorOpen) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const display = document.getElementById('calc-display');
+      if (!display) return;
+      const val = display.innerText;
+      
+      const key = e.key;
+      const allowedKeys = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '+', '-', '*', '/', '%', '(', ')', '^'];
+      
+      const evaluateExpr = (rawVal: string) => {
+        try {
+          let expr = rawVal.replace(/×/g, '*').replace(/÷/g, '/').replace(/π/g, 'Math.PI').replace(/e/g, 'Math.E');
+          expr = expr.replace(/sin\(/g, 'Math.sin(').replace(/cos\(/g, 'Math.cos(').replace(/tan\(/g, 'Math.tan(');
+          expr = expr.replace(/log\(/g, 'Math.log10(').replace(/ln\(/g, 'Math.log(').replace(/√\(/g, 'Math.sqrt(');
+          expr = expr.replace(/\^/g, '**');
+          
+          // eslint-disable-next-line no-eval
+          const result = eval(expr);
+          return Number.isFinite(result) ? (Number.isInteger(result) ? result.toString() : result.toFixed(6).replace(/\.?0+$/, "")) : 'Error';
+        } catch { return 'Err'; }
+      };
+
+      if (allowedKeys.includes(key)) {
+        display.innerText = val === '0' || val === 'Err' ? key : val + key;
+      } else if (key === 'Enter' || key === '=') {
+        display.innerText = evaluateExpr(val);
+      } else if (key === 'Backspace') {
+        display.innerText = val.length > 1 ? val.slice(0, -1) : '0';
+      } else if (key === 'Escape' || key === 'c' || key === 'C') {
+        display.innerText = '0';
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCalculatorOpen]);
 
   const allAbsentDates = useMemo(() => {
     const dates = Object.keys(att);
@@ -454,6 +535,74 @@ export default function App() {
   const [noteTarget, setNoteTarget] = useState<string>('all');
   const [showNotification, setShowNotification] = useState(false);
   const [notificationCount, setNotificationCount] = useState(0);
+
+  const handleAISend = async (customInput?: string) => {
+    const input = customInput || aiInput;
+    if (!input.trim() || !genAI) return;
+    
+    const userMsg = { role: 'user' as const, text: input };
+    const updatedMessages = [...aiChatMessages, userMsg];
+    setAIChatMessages(updatedMessages);
+    setAIInput('');
+    setAILoading(true);
+
+    try {
+      const response = await genAI.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: updatedMessages.map(m => ({
+          role: m.role === 'user' ? 'user' : 'model',
+          parts: [{ text: m.text }]
+        })),
+        config: {
+          systemInstruction: "You are a helpful assistant for a Lab Management System. Assist the user with queries about staff, payments, lab equipment, or general issues. Keep responses concise and professional."
+        }
+      });
+      
+      const text = response.text;
+      if (text) {
+        const finalMessages = [...updatedMessages, { role: 'model' as const, text }];
+        setAIChatMessages(finalMessages);
+        
+        let nextHistory = [...aiHistory];
+        if (currentChatId) {
+          nextHistory = nextHistory.map(h => h.id === currentChatId ? { ...h, messages: finalMessages } : h);
+        } else {
+          const newId = Date.now().toString();
+          setCurrentChatId(newId);
+          nextHistory = [{ id: newId, date: new Date().toISOString(), messages: finalMessages }, ...nextHistory.slice(0, 19)];
+        }
+        setAIHistory(nextHistory);
+        localStorage.setItem('titan_ai_history', JSON.stringify(nextHistory));
+      }
+    } catch (err) {
+      console.error("AI Chat Error:", err);
+      setAIChatMessages(prev => [...prev, { role: 'model', text: "Sorry, I'm having trouble connecting to the AI services. Please verify your API key configuration." }]);
+    } finally {
+      setAILoading(false);
+    }
+  };
+
+  const startVoiceRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice recognition is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.start();
+    setIsListening(true);
+
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setAIInput(transcript);
+      setIsListening(false);
+    };
+
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+  };
 
   const [showCalendar, setShowCalendar] = useState(false);
 
@@ -1101,6 +1250,10 @@ export default function App() {
             </>
           )}
 
+          <p className="text-[10px] font-bold text-[#888] uppercase tracking-wider mt-6 mb-2 px-2">Smart Tools</p>
+          <NavItem active={isAIChatOpen} onClick={() => { setAIChatMessages([]); setCurrentChatId(null); setIsAIChatOpen(true); }} icon={<Brain size={18} />} label="AI Assistant" theme={theme} />
+          <NavItem active={isCalculatorOpen} onClick={() => setIsCalculatorOpen(true)} icon={<CalcIcon size={18} />} label="Quick Calculator" theme={theme} />
+
           <button 
             onClick={handleLogout}
             className="mt-auto flex items-center justify-center gap-2 bg-[#ff3f34] text-white py-3 rounded-xl font-semibold hover:opacity-90 transition-opacity"
@@ -1176,6 +1329,7 @@ export default function App() {
                 <div className="space-y-8">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <StatCard 
+                      key="dash-stat-staff"
                       icon={<Users className={theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]"} />} 
                       label="Active Staff" 
                       value={staff.length} 
@@ -1184,6 +1338,7 @@ export default function App() {
                       theme={theme}
                     />
                     <StatCard 
+                      key="dash-stat-assets"
                       icon={<Package className="text-[#ff6600]" />} 
                       label="Lab Assets" 
                       value={equip.length + labSys.length} 
@@ -1192,6 +1347,7 @@ export default function App() {
                       theme={theme}
                     />
                     <StatCard 
+                      key="dash-stat-issues"
                       icon={<AlertTriangle className="text-[#ff3f34]" />} 
                       label="Issues" 
                       value={comp.length} 
@@ -1200,6 +1356,7 @@ export default function App() {
                       theme={theme}
                     />
                     <StatCard 
+                      key="dash-stat-sessions"
                       icon={<Calendar className="text-[#00ff88]" />} 
                       label="Lab Sessions" 
                       value={sched.length} 
@@ -1545,7 +1702,7 @@ export default function App() {
                                    }} className="p-2 hover:bg-white/5 rounded-lg"><RefreshCw size={14} className="rotate-90" /></button>
                                  </div>
                                  <div className="grid grid-cols-7 gap-1 text-center mb-2">
-                                   {['S','M','T','W','T','F','S'].map(d => <div key={d} className="text-[8px] font-black text-[#888]">{d}</div>)}
+                                   {['S','M','T','W','T','F','S'].map((d, i) => <div key={`${d}-${i}`} className="text-[8px] font-black text-[#888]">{d}</div>)}
                                  </div>
                                  <div className="grid grid-cols-7 gap-1">
                                     {(() => {
@@ -1558,13 +1715,13 @@ export default function App() {
                                       for(let i=1; i<=end.getDate(); i++) days.push(i);
                                       
                                       return days.map((day, idx) => {
-                                        if(!day) return <div key={`empty-${idx}`} />;
+                                        if(!day) return <div key={`calendar-empty-${idx}`} />;
                                         const dateStr = format(new Date(d.getFullYear(), d.getMonth(), day), 'yyyy-MM-dd');
                                         const isAllAbsent = allAbsentDates.includes(dateStr);
                                         const isSelected = attDate === dateStr;
                                         return (
                                           <button
-                                            key={dateStr}
+                                            key={`calendar-day-${dateStr}`}
                                             onClick={() => { setAttDate(dateStr); setShowCalendar(false); }}
                                             className={cn(
                                               "aspect-square flex items-center justify-center text-xs rounded-lg transition-all relative font-bold",
@@ -2911,10 +3068,10 @@ export default function App() {
               </div>
               <div className="space-y-6">
                 {historyToShow.length === 0 ? (
-                  <p className="text-center text-[#888] py-8 italic">No edit history found.</p>
+                  <p key="no-hist-msg" className="text-center text-[#888] py-8 italic">No edit history found.</p>
                 ) : (
                   historyToShow.slice().reverse().map((item, idx) => (
-                    <div key={`history-${item.timestamp}-${idx}`} className="relative pl-6 border-l-2 border-[#00f2ff]/30">
+                    <div key={`system-history-item-${item.timestamp}-${idx}`} className="relative pl-6 border-l-2 border-[#00f2ff]/30">
                       <div className="absolute left-[-5px] top-0 w-2 h-2 rounded-full bg-[#00f2ff]" />
                       <p className="text-[10px] font-bold text-[#888] uppercase mb-2">
                         {format(new Date(item.timestamp), 'PPpp')}
@@ -2984,7 +3141,7 @@ export default function App() {
                   >
                     <option value="all">All Staff Members</option>
                     {staff.filter(s => s.r !== 'Admin').map((s, i) => (
-                      <option key={`target-staff-opt-${s.docId || s.id || i}-${i}`} value={s.id}>{s.n} ({s.id})</option>
+                      <option key={`target-staff-opt-${s.docId || s.id || i}-${i}`} value={s.id || ''}>{s.n} ({s.id || 'N/A'})</option>
                     ))}
                   </select>
                 </div>
@@ -3174,6 +3331,307 @@ export default function App() {
                 >
                   UPDATE PASSWORD
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Quick Calculator Modal */}
+        {isCalculatorOpen && (
+          <div key="calc-modal-wrapper" className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
+            <motion.div 
+              key="calc-modal-backdrop"
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }} 
+              className="absolute inset-0 bg-black/80 backdrop-blur-md" 
+            />
+            <motion.div 
+              key="calc-modal-content"
+              initial={{ scale: 0.8, opacity: 0, rotateX: 20 }} 
+              animate={{ scale: 1, opacity: 1, rotateX: 0 }} 
+              exit={{ scale: 0.8, opacity: 0, rotateX: 20 }} 
+              className={cn(
+                "relative p-6 rounded-[40px] w-full max-w-[400px] shadow-2xl border overflow-hidden",
+                theme === 'dark' ? "bg-[#0d0d15] border-white/10" : "bg-white border-gray-200 shadow-xl"
+              )}
+            >
+              <div className="flex justify-between items-center mb-6 relative z-10">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-[#00f2ff]" />
+                  <h3 className={cn("text-[10px] font-black tracking-[0.2em] font-sans uppercase", theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")}>TITAN-SCIENTIFIC</h3>
+                </div>
+                <button onClick={() => setIsCalculatorOpen(false)} className="p-2 hover:bg-black/5 rounded-full text-[#888] hover:text-red-500 transition-colors"><X size={18} /></button>
+              </div>
+              
+              <div className={cn(
+                "p-4 rounded-3xl mb-6 text-right transition-all border relative z-10",
+                theme === 'dark' ? "bg-black border-white/10" : "bg-gray-100 border-gray-200"
+              )}>
+                <div className="text-[9px] text-[#888] h-4 uppercase tracking-[0.3em] font-black mb-1">Compute Core</div>
+                <div className={cn("text-3xl font-['JetBrains_Mono'] font-bold truncate tracking-tighter", theme === 'dark' ? "text-white" : "text-slate-900")} id="calc-display">0</div>
+              </div>
+
+              <div className="grid grid-cols-5 gap-2 relative z-10">
+                {[
+                  'sin', 'cos', 'tan', '√', '^',
+                  'log', 'ln', '(', ')', '%',
+                  '7', '8', '9', '÷', 'C',
+                  '4', '5', '6', '×', 'π',
+                  '1', '2', '3', '-', 'e',
+                  '0', '.', '=', '+'
+                ].map((btn) => (
+                  <button
+                    key={btn}
+                    onClick={() => {
+                      const display = document.getElementById('calc-display');
+                      if (!display) return;
+                      const val = display.innerText;
+                      if (btn === 'C') display.innerText = '0';
+                      else if (btn === '=') {
+                        try { 
+                          let expr = val.replace(/×/g, '*').replace(/÷/g, '/').replace(/π/g, 'Math.PI').replace(/e/g, 'Math.E');
+                          expr = expr.replace(/sin\(/g, 'Math.sin(').replace(/cos\(/g, 'Math.cos(').replace(/tan\(/g, 'Math.tan(');
+                          expr = expr.replace(/log\(/g, 'Math.log10(').replace(/ln\(/g, 'Math.log(').replace(/√\(/g, 'Math.sqrt(');
+                          expr = expr.replace(/\^/g, '**');
+                          
+                          // Handle cases like sin 90 (without parenthesis) if needed, but let's stick to standard behavior
+                          // eslint-disable-next-line no-eval
+                          const result = eval(expr);
+                          display.innerText = Number.isFinite(result) ? (Number.isInteger(result) ? result.toString() : result.toFixed(6).replace(/\.?0+$/, "")) : 'Error';
+                        } catch { display.innerText = 'Err'; }
+                      }
+                      else {
+                        const isFunc = ['sin', 'cos', 'tan', 'log', 'ln', '√'].includes(btn);
+                        const append = isFunc ? btn + '(' : btn;
+                        display.innerText = val === '0' || val === 'Err' ? append : val + append;
+                      }
+                    }}
+                    className={cn(
+                      "h-11 flex items-center justify-center rounded-xl font-bold text-xs transition-all active:scale-95 shadow-sm",
+                      btn === '=' 
+                        ? (theme === 'dark' ? "bg-[#00f2ff] text-black" : "bg-[#2563eb] text-white") 
+                        : (theme === 'dark' ? "bg-white/10 hover:bg-white/20 text-white" : "bg-white border border-gray-200 hover:bg-gray-50 text-slate-800"),
+                      ['÷', '×', '-', '+', '%', 'C', 'sin', 'cos', 'tan', 'log', 'ln', '√', '^'].includes(btn) && (theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]")
+                    )}
+                    style={btn === '0' ? { gridColumn: 'span 2' } : {}}
+                  >
+                    {btn}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-center gap-2 mt-6">
+                <span className="w-1 h-1 rounded-full bg-green-500" />
+                <p className="text-[9px] text-[#888] uppercase tracking-widest font-black">Secure Computing Mode</p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* AI Assistant Modal */}
+        {isAIChatOpen && (
+          <div key="ai-chat-modal-wrapper" className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
+            <motion.div 
+              key="ai-chat-modal-backdrop"
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }} 
+              className="absolute inset-0 bg-black/70 backdrop-blur-lg" 
+            />
+            <motion.div 
+              key="ai-chat-modal-content"
+              initial={{ x: 200, opacity: 0 }} 
+              animate={{ x: 0, opacity: 1 }} 
+              exit={{ x: 200, opacity: 0 }} 
+              className={cn(
+                "relative flex flex-row w-[95vw] max-w-[1000px] h-[85vh] max-h-[800px] shadow-2xl rounded-[48px] overflow-hidden border border-white/5",
+                theme === 'dark' ? "bg-[#050508]" : "bg-white"
+              )}
+            >
+              {/* Sidebar for History */}
+              <div className={cn(
+                "w-72 border-r flex flex-col transition-all duration-300 z-30",
+                theme === 'dark' ? "bg-black/20 border-white/5" : "bg-gray-50 border-gray-100",
+                showAIHistory ? "translate-x-0" : "-translate-x-full absolute h-full"
+              )}>
+                <div className="p-6 border-b border-white/5 flex justify-between items-center">
+                  <h4 className="font-bold text-xs tracking-widest text-[#888] uppercase">Chat History</h4>
+                  <button onClick={() => setShowAIHistory(false)} className="lg:hidden"><X size={16} /></button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
+                  {aiHistory.length === 0 ? (
+                    <p className="text-[10px] text-center opacity-30 mt-10 uppercase tracking-widest">No history yet</p>
+                  ) : (
+                    aiHistory.map((h, i) => (
+                      <div key={`ai-session-item-${h.id || i}-${i}`} className="relative group">
+                        <button 
+                          onClick={() => {
+                            setAIChatMessages(h.messages);
+                            setCurrentChatId(h.id);
+                            setShowAIHistory(false);
+                          }}
+                          className={cn(
+                            "w-full p-4 pr-10 rounded-2xl text-left transition-all",
+                            theme === 'dark' ? "hover:bg-white/5" : "hover:bg-white border border-transparent hover:border-gray-200",
+                            currentChatId === h.id && (theme === 'dark' ? "bg-white/5 border-white/10" : "bg-white border-gray-200")
+                          )}
+                        >
+                          <div className="text-[10px] text-[#888] mb-1">{format(new Date(h.date), 'MMM dd, HH:mm')}</div>
+                          <div className="text-xs font-semibold truncate opacity-80">
+                            {h.messages.find(m => m.role === 'user')?.text || "Empty Chat"}
+                          </div>
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const newHistory = aiHistory.filter((_, idx) => idx !== i);
+                            if (h.id === currentChatId) {
+                               setAIChatMessages([]);
+                               setCurrentChatId(null);
+                            }
+                            setAIHistory(newHistory);
+                            localStorage.setItem('titan_ai_history', JSON.stringify(newHistory));
+                          }}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-red-500 opacity-0 group-hover:opacity-100 hover:bg-red-500/10 rounded-lg transition-all"
+                        >
+                          <Trash size={14} />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="p-6 border-t border-white/5">
+                  <button 
+                    onClick={() => {
+                      setAIHistory([]);
+                      localStorage.setItem('titan_ai_history', JSON.stringify([]));
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-2 text-[10px] font-bold text-[#ff3f34] border border-[#ff3f34]/20 rounded-xl hover:bg-[#ff3f34]/5 transition-all"
+                  >
+                    <Trash size={12} /> CLEAR ALL
+                  </button>
+                </div>
+              </div>
+
+              {/* Main Chat Area */}
+              <div className="flex-1 flex flex-col min-w-0 bg-transparent">
+                <div className="p-8 border-b border-white/5 flex justify-between items-center relative z-10">
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={() => setShowAIHistory(!showAIHistory)}
+                      className={cn(
+                        "p-3 rounded-2xl transition-all",
+                        theme === 'dark' ? "bg-white/5 text-[#00f2ff]" : "bg-gray-100 text-[#2563eb]"
+                      )}
+                    >
+                      <FileClock size={20} />
+                    </button>
+                    <div>
+                      <h3 className="font-black text-lg tracking-tight flex items-center gap-2 uppercase">Titan AI <span className="text-[9px] bg-[#00f2ff]/20 text-[#00f2ff] px-2 py-0.5 rounded-full font-bold">GEMINI 1.5</span></h3>
+                      <p className="text-[10px] text-[#888] font-bold">SYSTEM ASSISTANT • LAB OPERATIONS</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => { setAIChatMessages([]); setCurrentChatId(null); }}
+                      className="p-3 hover:bg-white/5 rounded-2xl border border-white/5 text-[#888] flex items-center gap-2 text-[10px] font-bold"
+                    >
+                      <Plus size={16} /> NEW SESSION
+                    </button>
+                    <button onClick={() => setIsAIChatOpen(false)} className="p-3 hover:bg-white/5 rounded-2xl text-[#888]"><X size={20} /></button>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar scroll-smooth">
+                  {aiChatMessages.length === 0 && (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-12">
+                      <div className="w-20 h-20 rounded-[32px] bg-[#00f2ff]/10 flex items-center justify-center mb-8 shadow-[0_0_40px_rgba(0,242,255,0.2)]">
+                        <Brain size={40} className="text-[#00f2ff]" />
+                      </div>
+                      <h4 className="text-xl font-bold mb-3 tracking-tight">How can I help you, {currentUser?.n.split(' ')[0]}?</h4>
+                      <p className="text-sm text-[#888] max-w-sm leading-relaxed mb-8">
+                        I have access to Lab inventory, staff records, and payroll data. Ask me to calculate salaries, check equipment status, or find staff info.
+                      </p>
+                      <div className="grid grid-cols-2 gap-3 w-full max-w-md">
+                        {['Show latest staff notes', 'Calculate monthly payroll', 'Check lab inventory', 'Find computer status'].map(q => (
+                          <button 
+                            key={q} 
+                            onClick={() => { setAIInput(q); handleAISend(q); }}
+                            className={cn(
+                              "p-4 rounded-3xl text-[10px] font-black uppercase text-left tracking-wider border transition-all",
+                              theme === 'dark' ? "bg-white/5 border-white/5 hover:border-[#00f2ff]/50" : "bg-gray-50 border-gray-100 hover:bg-white"
+                            )}
+                          >
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiChatMessages.map((msg, i) => (
+                    <motion.div 
+                      initial={{ y: 20, opacity: 0 }} 
+                      animate={{ y: 0, opacity: 1 }} 
+                      key={`ai-msg-${i}-${msg.role}-${msg.text.slice(0, 10)}`} 
+                      className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}
+                    >
+                      <div className={cn(
+                        "max-w-[70%] p-6 rounded-[32px] text-sm leading-relaxed shadow-sm",
+                        msg.role === 'user' 
+                          ? (theme === 'dark' ? "bg-[#00f2ff] text-black rounded-tr-none font-medium" : "bg-[#2563eb] text-white rounded-tr-none")
+                          : (theme === 'dark' ? "bg-white/5 border border-white/5 rounded-tl-none text-white/90" : "bg-gray-100 rounded-tl-none text-slate-800")
+                      )}>
+                        {msg.text}
+                      </div>
+                    </motion.div>
+                  ))}
+                  
+                  {aiLoading && (
+                    <div className="flex justify-start">
+                      <div className={cn("p-6 rounded-[32px] rounded-tl-none flex items-center gap-4", theme === 'dark' ? "bg-white/5" : "bg-gray-100")}>
+                        <Loader2 className="animate-spin text-[#00f2ff]" size={18} />
+                        <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">System Processing...</span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                <div className="p-8 pb-10 bg-gradient-to-t from-black/20 to-transparent">
+                  <div className="relative group">
+                    <input 
+                      type="text" 
+                      value={aiInput}
+                      onChange={(e) => setAIInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAISend()}
+                      placeholder="Input query or use voice..."
+                      className={cn(
+                        "w-full pl-8 pr-32 py-6 rounded-[32px] outline-none border transition-all text-base shadow-lg",
+                        theme === 'dark' ? "bg-[#0d0d15] border-white/10 text-white focus:border-[#00f2ff] focus:ring-4 focus:ring-[#00f2ff]/10" : "bg-white border-gray-200 text-black focus:border-[#2563eb]"
+                      )}
+                    />
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                       <button 
+                        onClick={startVoiceRecognition}
+                        className={cn(
+                          "p-4 rounded-2xl transition-all shadow-md group-hover:scale-105",
+                          isListening ? "bg-[#ff3f34] text-white animate-pulse shadow-[0_0_20px_rgba(255,63,52,0.4)]" : "bg-white/5 text-[#888] hover:text-[#00f2ff]"
+                        )}
+                      >
+                        {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                      </button>
+                      <button 
+                        onClick={() => handleAISend()}
+                        disabled={aiLoading || !aiInput.trim()}
+                        className="p-4 bg-[#00f2ff] text-black rounded-2xl hover:shadow-[0_0_30px_rgba(0,242,255,0.5)] transition-all disabled:opacity-30 disabled:grayscale group-hover:scale-105"
+                      >
+                        <Send size={20} />
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-center mt-4 text-[#444] font-black uppercase tracking-[0.3em]">Neural Interface Encryption: Enabled</p>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -3392,8 +3850,9 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
       {/* Status Modal */}
       <AnimatePresence>
         {statusModal.show && (
-          <div className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
+          <div key="status-modal-overlay" className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
             <motion.div 
+              key="status-modal-backdrop"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -3401,6 +3860,7 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
               className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
             />
             <motion.div 
+              key="status-modal-content"
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
@@ -3553,6 +4013,7 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
           </div>
         )}
       </AnimatePresence>
+
     </div>
   );
 }
