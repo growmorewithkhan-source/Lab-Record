@@ -1329,7 +1329,6 @@ export default function App() {
                 <div className="space-y-8">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <StatCard 
-                      key="dash-stat-staff"
                       icon={<Users className={theme === 'dark' ? "text-[#00f2ff]" : "text-[#2563eb]"} />} 
                       label="Active Staff" 
                       value={staff.length} 
@@ -1338,7 +1337,6 @@ export default function App() {
                       theme={theme}
                     />
                     <StatCard 
-                      key="dash-stat-assets"
                       icon={<Package className="text-[#ff6600]" />} 
                       label="Lab Assets" 
                       value={equip.length + labSys.length} 
@@ -1347,7 +1345,6 @@ export default function App() {
                       theme={theme}
                     />
                     <StatCard 
-                      key="dash-stat-issues"
                       icon={<AlertTriangle className="text-[#ff3f34]" />} 
                       label="Issues" 
                       value={comp.length} 
@@ -1356,7 +1353,6 @@ export default function App() {
                       theme={theme}
                     />
                     <StatCard 
-                      key="dash-stat-sessions"
                       icon={<Calendar className="text-[#00ff88]" />} 
                       label="Lab Sessions" 
                       value={sched.length} 
