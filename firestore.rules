@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Prototype Security Rules
+    // ===============================================================
+    //
+    // These rules are currently set to allow public read and write access
+    // to all collections. This is a temporary measure to unblock development
+    // while you configure your Firebase project.
+    //
+    // CRITICAL: Before deploying to production, you MUST review and harden
+    // these rules to ensure your data is secure.
+    //
+    // ===============================================================
+
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

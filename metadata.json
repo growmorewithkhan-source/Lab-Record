@@ -1,0 +1,6 @@
+{
+  "name": "SK-OS TITAN ERP",
+  "description": "Enterprise Resource Planning system for staff management, payroll, inventory, and lab scheduling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

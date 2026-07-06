@@ -1,0 +1,124 @@
+{
+  "entities": {
+    "Staff": {
+      "title": "Staff",
+      "description": "Staff members of the institution",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Staff ID" },
+        "n": { "type": "string", "description": "Name" },
+        "r": { "type": "string", "description": "Role (Admin/Staff)" },
+        "s": { "type": "string", "description": "Salary" },
+        "p": { "type": "string", "description": "Password" },
+        "pic": { "type": "string", "description": "Profile Picture URL" },
+        "type": { "type": "string", "description": "Employment Type (Permanent/Daily)" },
+        "lab": { "type": "string", "description": "Assigned Lab Name" },
+        "firstLogin": { "type": "boolean", "description": "Whether it is the user's first login" }
+      },
+      "required": ["id", "n", "r", "p"]
+    },
+    "Equipment": {
+      "title": "Equipment",
+      "description": "General inventory equipment",
+      "type": "object",
+      "properties": {
+        "n": { "type": "string", "description": "Name" },
+        "s": { "type": "string", "description": "Serial Number" },
+        "st": { "type": "string", "description": "Status" }
+      },
+      "required": ["n", "s"]
+    },
+    "LabSys": {
+      "title": "Lab System",
+      "description": "PC specifications in a lab",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "PC ID" },
+        "staffId": { "type": "string", "description": "Assigned Staff ID" },
+        "gen": { "type": "string", "description": "Generation" },
+        "ram": { "type": "string", "description": "RAM" },
+        "disk": { "type": "string", "description": "Disk" },
+        "count": { "type": "integer", "description": "Quantity" }
+      },
+      "required": ["id", "staffId"]
+    },
+    "LabSw": {
+      "title": "Lab Software",
+      "description": "Software installed in a lab",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "PC ID" },
+        "staffId": { "type": "string", "description": "Assigned Staff ID" },
+        "name": { "type": "string", "description": "Software Name" },
+        "ver": { "type": "string", "description": "Version" }
+      },
+      "required": ["name", "staffId"]
+    },
+    "LabEquip": {
+      "title": "Lab Equipment",
+      "description": "Equipment in a specific lab",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Equipment ID" },
+        "staffId": { "type": "string", "description": "Assigned Staff ID" },
+        "name": { "type": "string", "description": "Equipment Name" },
+        "status": { "type": "string", "description": "Status" }
+      },
+      "required": ["name", "staffId"]
+    },
+    "Complaint": {
+      "title": "Complaint",
+      "description": "Complaint or issue tracker",
+      "type": "object",
+      "properties": {
+        "d": { "type": "string", "description": "Description" },
+        "a": { "type": "string", "description": "Assignee" },
+        "p": { "type": "string", "description": "Priority" }
+      },
+      "required": ["d", "a"]
+    },
+    "Schedule": {
+      "title": "Schedule",
+      "description": "Lab session schedule",
+      "type": "object",
+      "properties": {
+        "day": { "type": "string", "description": "Day of the week" },
+        "st": { "type": "string", "description": "Start Time" },
+        "et": { "type": "string", "description": "End Time" },
+        "sub": { "type": "string", "description": "Subject" },
+        "inst": { "type": "string", "description": "Instructor" }
+      },
+      "required": ["day", "st", "et", "sub"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "Staff notes and communication",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Note ID" },
+        "staffId": { "type": "string", "description": "Author Staff ID" },
+        "staffName": { "type": "string", "description": "Author Name" },
+        "text": { "type": "string", "description": "Note Content" },
+        "timestamp": { "type": "string", "description": "Creation Timestamp" },
+        "targetStaffId": { "type": "string", "description": "Target Staff ID (or 'all')" },
+        "isRead": { "type": "boolean", "description": "Read Status" },
+        "reply": { "type": "string", "description": "Admin Reply" },
+        "replyStaffId": { "type": "string", "description": "Admin Staff ID" },
+        "replyTimestamp": { "type": "string", "description": "Reply Timestamp" },
+        "isClosed": { "type": "boolean", "description": "Conversation Status" }
+      },
+      "required": ["id", "staffId", "text", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/staff": { "schema": "Staff", "description": "Collection of staff members" },
+    "/equipment": { "schema": "Equipment", "description": "Collection of general equipment" },
+    "/lab_sys": { "schema": "LabSys", "description": "Collection of lab PC specs" },
+    "/lab_sw": { "schema": "LabSw", "description": "Collection of lab software" },
+    "/lab_equip": { "schema": "LabEquip", "description": "Collection of lab equipment" },
+    "/complaints": { "schema": "Complaint", "description": "Collection of complaints" },
+    "/schedules": { "schema": "Schedule", "description": "Collection of lab schedules" },
+    "/notes": { "schema": "Note", "description": "Collection of staff notes" },
+    "/attendance": { "schema": "object", "description": "Collection of attendance records by date" }
+  }
+}
