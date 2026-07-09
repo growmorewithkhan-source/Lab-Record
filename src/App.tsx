@@ -1688,6 +1688,7 @@ export default function App() {
                            <AnimatePresence>
                              {showCalendar && (
                                <motion.div 
+                                 key="calendar-popover"
                                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
                                  animate={{ opacity: 1, y: 0, scale: 1 }}
                                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -2917,7 +2918,7 @@ export default function App() {
       {/* Modals */}
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
+          <div key="main-crud-modal" className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -2951,7 +2952,7 @@ export default function App() {
         )}
 
         {isConfirmModalOpen && (
-          <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
+          <div key="confirm-action-modal" className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -3015,7 +3016,7 @@ export default function App() {
         )}
 
         {isReasonModalOpen && (
-          <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
+          <div key="reason-absence-modal" className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -3079,7 +3080,7 @@ export default function App() {
         )}
 
         {isOTModalOpen && (
-          <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
+          <div key="ot-logging-modal" className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }} 
               animate={{ opacity: 1 }} 
@@ -3222,7 +3223,7 @@ export default function App() {
         )}
 
         {isShareOTModalOpen && (
-          <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
+          <div key="share-ot-whatsapp-modal" className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }} 
               animate={{ opacity: 1 }} 
@@ -3318,7 +3319,7 @@ export default function App() {
         )}
 
         {isProfileModalOpen && (
-          <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
+          <div key="profile-crop-modal" className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -3676,6 +3677,7 @@ export default function App() {
         <AnimatePresence>
           {showNotification && (
             <motion.div 
+              key="unread-notes-toast"
               initial={{ x: 100, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: 100, opacity: 0 }}
@@ -3694,7 +3696,7 @@ export default function App() {
         </AnimatePresence>
 
         {isFirstLoginModalOpen && (
-          <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
+          <div key="first-login-pass-modal" className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -3921,6 +3923,7 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
         <AnimatePresence>
           {showError && (
             <motion.div 
+              key="login-error-alert"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
@@ -4037,7 +4040,7 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
       {/* Support Modal */}
       <AnimatePresence>
         {isSupportModalOpen && (
-          <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
+          <div key="support-modal-overlay" className="fixed inset-0 z-[3000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -4083,7 +4086,7 @@ function Login({ onLogin, theme, staff, setStaff }: { onLogin: (id: string, pass
       {/* Change Password Modal */}
       <AnimatePresence>
         {isChangePassModalOpen && (
-          <div className="fixed inset-0 z-[4000] flex items-center justify-center p-4">
+          <div key="change-pass-modal-overlay" className="fixed inset-0 z-[4000] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
